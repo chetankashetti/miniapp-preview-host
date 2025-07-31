@@ -125,16 +125,22 @@ app.post("/previews", requireAuth, async (req, res) => {
       hasLock ? files.find((f) => f.path === "pnpm-lock.yaml").content : null
     );
     if (doInstall) {
-      await run("pnpm", [
-        "--dir",
-        dir,
-        "install",
-        "--prefer-offline",
-        "--frozen-lockfile",
-        "--store-dir",
-        PNPM_STORE,
-        "--prod=false",
-      ]);
+      await run(
+        "pnpm",
+        [
+          "--dir",
+          dir,
+          "install",
+          "--prefer-offline",
+          "--frozen-lockfile",
+          "--store-dir",
+          PNPM_STORE,
+          "--prod=false", // installs devDependencies
+        ],
+        id,
+        p.logs, // (if you’re capturing logs)
+        { env: { ...process.env, NODE_ENV: "development" } } // <-- add this
+      );
     }
 
     const port = nextFreePort();
