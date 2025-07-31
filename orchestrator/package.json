@@ -1,0 +1,10 @@
+{
+  "name": "preview-host",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "express": "^4.19.2",
+    "http-proxy": "^1.18.1"
+  }
+}
