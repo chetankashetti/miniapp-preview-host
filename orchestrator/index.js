@@ -23,12 +23,12 @@ const proxy = httpProxy.createProxyServer({ ws: true });
 app.use(bodyParser.json({ limit: "50mb" }));
 
 // Simple bearer auth (recommended)
-app.use((req, res, next) => {
+function requireAuth(req, res, next) {
   if (!AUTH_TOKEN) return next();
-  const h = req.headers["authorization"];
-  if (h === `Bearer ${AUTH_TOKEN}`) return next();
+  const hdr = req.headers["authorization"] || "";
+  if (hdr === `Bearer ${AUTH_TOKEN}`) return next();
   res.status(401).json({ error: "unauthorized" });
-});
+}
 
 // Helpers
 function sha(s) {
@@ -59,7 +59,19 @@ async function writeFiles(dir, files) {
     })
   );
 }
-async function needInstall(dir, incomingPkg, incomingLock) {
+
+async function exists(p) {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function needInstall(dir, incomingPkgJson, incomingLock) {
+  // brand-new copy -> no node_modules -> we must install
+  if (!(await exists(path.join(dir, "node_modules")))) return true;
+
   try {
     const baseLock = await fs.readFile(
       path.join(BOILERPLATE, "pnpm-lock.yaml"),
@@ -68,7 +80,7 @@ async function needInstall(dir, incomingPkg, incomingLock) {
     const projLock =
       incomingLock ??
       (await fs.readFile(path.join(dir, "pnpm-lock.yaml"), "utf8"));
-    return sha(baseLock) !== sha(projLock) || !!incomingPkg;
+    return sha(baseLock) !== sha(projLock) || !!incomingPkgJson;
   } catch {
     return true;
   }
@@ -91,7 +103,7 @@ function startDev(dir, port) {
 }
 
 // Create/patch preview
-app.post("/previews", async (req, res) => {
+app.post("/previews", requireAuth, async (req, res) => {
   const { id, files } = req.body; // files: [{path, content}]
   if (!id) return res.status(400).json({ error: "id required" });
   try {
@@ -121,6 +133,7 @@ app.post("/previews", async (req, res) => {
         "--frozen-lockfile",
         "--store-dir",
         PNPM_STORE,
+        "--prod=false",
       ]);
     }
 
@@ -136,7 +149,7 @@ app.post("/previews", async (req, res) => {
 });
 
 // Stop preview
-app.delete("/previews/:id", (req, res) => {
+app.delete("/previews/:id", requireAuth, (req, res) => {
   const p = previews.get(req.params.id);
   if (!p) return res.status(404).json({ error: "not found" });
   try {
@@ -165,6 +178,24 @@ server.on("upgrade", (req, socket, head) => {
   const p = previews.get(m[1]);
   if (!p) return socket.destroy();
   proxy.ws(req, socket, head, { target: `ws://127.0.0.1:${p.port}` });
+});
+
+app.get("/previews/:id/status", (req, res) => {
+  const p = previews.get(req.params.id);
+  if (!p) return res.status(404).json({ status: "not_found" });
+  res.json({
+    status: p.status || "unknown",
+    port: p.port,
+    dir: p.dir,
+    lastError: p.lastError || null,
+  });
+});
+
+app.get("/previews/:id/logs", (req, res) => {
+  const p = previews.get(req.params.id);
+  if (!p) return res.status(404).send("not_found");
+  res.setHeader("content-type", "text/plain; charset=utf-8");
+  res.send(p.logs?.text?.() || "");
 });
 
 // Idle reaper
