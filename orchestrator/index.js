@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { createProxyServer } from "http-proxy";
+import httpProxy from "http-proxy";
 
 const PORT = process.env.PORT || 8080;
 const ROOT = "/srv";
@@ -18,7 +18,7 @@ const BASE_PORT = 4000;
 const previews = new Map(); // id -> { port, proc, dir, lastHit }
 const app = express();
 const server = http.createServer(app);
-const proxy = createProxyServer({ ws: true });
+const proxy = httpProxy.createProxyServer({ ws: true });
 
 app.use(bodyParser.json({ limit: "50mb" }));
 
