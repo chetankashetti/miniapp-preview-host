@@ -109,8 +109,7 @@ async function pnpmInstall(dir, { id, storeDir, logs }) {
     "install",
     "--prefer-offline",
     "--frozen-lockfile",
-    "--prod=false", // include dev deps
-    "--yes", // auto confirm prompts
+    "--prod=false", // install devDependencies (Next)
     "--reporter",
     "append-only",
   ];
