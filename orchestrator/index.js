@@ -1,4 +1,5 @@
-// orchestrator/index.js — complete, copy-paste
+// orchestrator/index.js — full file
+
 import express from "express";
 import bodyParser from "body-parser";
 import http from "node:http";
@@ -16,14 +17,13 @@ const PORT = process.env.PORT || 8080;
 // Paths (env-overridable)
 const BOILERPLATE = process.env.BOILERPLATE_DIR || "/srv/boilerplate";
 const PREVIEWS_ROOT = process.env.PREVIEWS_ROOT || "/srv/previews";
-// Single-volume default: keep pnpm store inside the same volume
 const PNPM_STORE =
   process.env.PNPM_STORE_DIR || path.join(PREVIEWS_ROOT, ".pnpm-store");
 
 // Auth (Bearer) for management endpoints only
 const AUTH_TOKEN = process.env.PREVIEW_AUTH_TOKEN || "";
 
-// Dev ports for previews
+// Dev port base
 const BASE_PORT = Number(process.env.BASE_PORT || 4000);
 
 /* ========= Small utils ========= */
@@ -86,63 +86,58 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
 /* ========= PNPM install (robust) ========= */
 
 async function pnpmInstall(dir, { id, storeDir, logs }) {
-  // Ensure store exists & is writable
   await fs.mkdir(storeDir, { recursive: true });
 
-  // Respect packageManager: "pnpm@x" if present (optional safety)
-  let pkgMgrVersion = null;
+  // Respect packageManager: "pnpm@x"
+  let ver = null;
   try {
     const pkg = JSON.parse(
       await fs.readFile(path.join(dir, "package.json"), "utf8")
     );
     const m = String(pkg.packageManager || "").match(/pnpm@([\d.]+)/);
-    if (m) pkgMgrVersion = m[1];
+    if (m) ver = m[1];
   } catch {}
 
   const env = {
     ...process.env,
     NODE_ENV: "development", // include devDependencies (Next)
-    PNPM_STORE_DIR: storeDir, // use persistent store
+    CI: "1", // non-interactive
+    PNPM_STORE_DIR: storeDir, // persistent store
   };
 
-  // Run in CWD (more reliable than only --dir, esp. with workspaces)
   const baseArgs = [
     "install",
     "--prefer-offline",
     "--frozen-lockfile",
     "--prod=false", // include dev deps
+    "--yes", // auto confirm prompts
     "--reporter",
     "append-only",
   ];
 
   try {
-    if (pkgMgrVersion) {
-      await run("npx", ["-y", `pnpm@${pkgMgrVersion}`, ...baseArgs], {
+    if (ver)
+      await run("npx", ["-y", `pnpm@${ver}`, ...baseArgs], {
         id,
         cwd: dir,
         env,
         logs,
       });
-    } else {
-      await run("pnpm", baseArgs, { id, cwd: dir, env, logs });
-    }
+    else await run("pnpm", baseArgs, { id, cwd: dir, env, logs });
   } catch {
-    // Fallback without --frozen-lockfile if lock mismatch
+    // fallback without --frozen-lockfile
     const retry = baseArgs.filter((a) => a !== "--frozen-lockfile");
-    console.warn(`[${id}] retrying install without --frozen-lockfile…`);
-    if (pkgMgrVersion) {
-      await run("npx", ["-y", `pnpm@${pkgMgrVersion}`, ...retry], {
+    if (ver)
+      await run("npx", ["-y", `pnpm@${ver}`, ...retry], {
         id,
         cwd: dir,
         env,
         logs,
       });
-    } else {
-      await run("pnpm", retry, { id, cwd: dir, env, logs });
-    }
+    else await run("pnpm", retry, { id, cwd: dir, env, logs });
   }
 
-  // Verify: Next binary must exist
+  // Verify Next binary exists
   const nextBin = path.join(dir, "node_modules", ".bin", "next");
   if (!(await exists(nextBin))) {
     throw new Error(`[${id}] install finished but ".bin/next" is missing`);
@@ -159,19 +154,46 @@ async function needInstall(dir) {
 const previews = new Map(); // id -> { port, proc, dir, lastHit, status, logs, lastError }
 const proxy = httpProxy.createProxyServer({ ws: true });
 
+// prevent crashes on target errors
+proxy.on("error", (err, req, res) => {
+  console.error("proxy error:", err?.message || err);
+  if (res && !res.headersSent) {
+    res.writeHead(502, { "content-type": "text/plain" });
+    return res.end(
+      "Preview backend isn’t reachable yet. Try again in a few seconds."
+    );
+  }
+  try {
+    req?.socket?.destroy?.();
+  } catch {}
+});
+
+let lastPort = BASE_PORT - 1;
 function nextFreePort() {
-  const used = new Set([...previews.values()].map((p) => p.port));
-  for (let p = BASE_PORT; p < BASE_PORT + 2000; p++) if (!used.has(p)) return p;
+  // simple rolling allocator across a 2k window
+  for (let i = 0; i < 2000; i++) {
+    const cand = ((lastPort + 1 - BASE_PORT + i) % 2000) + BASE_PORT;
+    if (![...previews.values()].some((p) => p.port === cand)) {
+      lastPort = cand;
+      return cand;
+    }
+  }
   throw new Error("No free ports available");
 }
 
 async function copyBoilerplate(dst) {
   await fs.mkdir(dst, { recursive: true });
-  // use tar for fast copy, ignore .git
+  // copy while excluding build dirs & node_modules
   await run("sh", [
     "-lc",
-    `tar -C ${BOILERPLATE} -cf - . --exclude=.git | tar -C ${dst} -xpf -`,
+    `tar -C ${BOILERPLATE} -cf - . \
+      --exclude=.git --exclude=node_modules --exclude=.next --exclude=.turbo --exclude=dist --exclude=build \
+      | tar -C ${dst} -xpf -`,
   ]);
+  // safety: ensure none of these exist post-copy
+  for (const d of ["node_modules", ".next", ".turbo", "dist", "build"]) {
+    await fs.rm(path.join(dst, d), { recursive: true, force: true });
+  }
 }
 
 async function writeFiles(dir, files) {
@@ -187,11 +209,16 @@ async function writeFiles(dir, files) {
 
 function startDev(id, dir, port, logs) {
   const env = { ...process.env, NODE_ENV: "development", PORT: String(port) };
-  const proc = spawn("pnpm", ["next", "dev", "-p", String(port)], {
-    cwd: dir,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  // Use package script: "dev": "next dev"
+  const proc = spawn(
+    "pnpm",
+    ["run", "dev", "--", "-p", String(port), "-H", "127.0.0.1"],
+    {
+      cwd: dir,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    }
+  );
 
   const onData = (d) => {
     const line = `[${id}] ${d.toString()}`;
@@ -219,7 +246,7 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: "unauthorized" });
 }
 
-function waitForReady(port, timeoutMs = 30000) {
+function waitForReady(port, timeoutMs = 60000) {
   const start = Date.now();
   return new Promise((resolve) => {
     const tryOnce = () => {
@@ -232,7 +259,7 @@ function waitForReady(port, timeoutMs = 30000) {
       );
       req.on("error", () => {
         if (Date.now() - start > timeoutMs) return resolve(false);
-        setTimeout(tryOnce, 400);
+        setTimeout(tryOnce, 300);
       });
       req.on("timeout", () => {
         try {
@@ -253,7 +280,9 @@ app.use(bodyParser.json({ limit: "50mb" }));
 
 // Create/patch preview
 app.post("/previews", requireAuth, async (req, res) => {
-  const { id, files, wait = false } = req.body;
+  const id = req.body.id;
+  const files = req.body.files;
+  const wait = req.body.wait ?? true; // default: wait for readiness
   if (!id) return res.status(400).json({ error: "id required" });
 
   try {
@@ -269,42 +298,45 @@ app.post("/previews", requireAuth, async (req, res) => {
       });
     }
 
-    // Fresh: copy boilerplate, write deltas
     const dir = path.join(PREVIEWS_ROOT, id);
+
+    // Clean slate (avoid stale node_modules prompts)
+    if (existsSync(dir)) await fs.rm(dir, { recursive: true, force: true });
+
+    // Fresh: copy boilerplate, write deltas
     await copyBoilerplate(dir);
     await writeFiles(dir, files);
 
-    // Install if Next isn't present
+    // Install (always on fresh create)
     const logs = makeRing();
-    if (await needInstall(dir)) {
-      await pnpmInstall(dir, { id, storeDir: PNPM_STORE, logs });
-    }
+    await pnpmInstall(dir, { id, storeDir: PNPM_STORE, logs });
 
-    // Start dev
+    // Start dev (record BEFORE spawn to avoid races)
     const port = nextFreePort();
-    const proc = startDev(id, dir, port, logs);
-    previews.set(id, {
+    const rec = {
       port,
-      proc,
+      proc: null,
       dir,
       lastHit: Date.now(),
       status: "starting",
       logs,
       lastError: null,
-    });
+    };
+    previews.set(id, rec);
+    const proc = startDev(id, dir, port, logs);
+    rec.proc = proc;
 
     if (wait) {
-      const ok = await waitForReady(port, 30000);
-      const p = previews.get(id);
-      if (!ok || !p) {
+      const ok = await waitForReady(port, 60000);
+      if (!ok) {
+        previews.delete(id);
         return res.status(500).json({
           error: "dev did not become ready in time",
-          status: p?.status || "unknown",
-          lastError: p?.lastError || null,
+          status: "starting",
           logs: logs.text().slice(-4000),
         });
       }
-      p.status = "running";
+      rec.status = "running";
       return res.json({ url: `/p/${id}`, status: "running", port });
     }
 
@@ -356,7 +388,8 @@ app.use("/p/:id", async (req, res) => {
     const dir = path.join(PREVIEWS_ROOT, id);
     if (existsSync(dir)) {
       const logs = makeRing();
-      // Ensure deps are present (handles cases after wipe)
+
+      // ensure deps (safe if already present)
       if (await needInstall(dir)) {
         try {
           await pnpmInstall(dir, { id, storeDir: PNPM_STORE, logs });
@@ -366,25 +399,36 @@ app.use("/p/:id", async (req, res) => {
             .send(`Auto-install failed: ${String(e.message || e)}`);
         }
       }
+
       const port = nextFreePort();
-      const proc = startDev(id, dir, port, logs);
       p = {
         port,
-        proc,
+        proc: null,
         dir,
         lastHit: Date.now(),
-        status: "running",
+        status: "starting",
         logs,
         lastError: null,
       };
       previews.set(id, p);
+      const proc = startDev(id, dir, port, logs);
+      p.proc = proc;
+
+      const ok = await waitForReady(port, 60000);
+      if (!ok) {
+        previews.delete(id);
+        return res
+          .status(503)
+          .send("Preview is starting. Please retry in a few seconds.");
+      }
+      p.status = "running";
       console.log(`[${id}] auto-restarted on ${port}`);
     }
   }
 
   if (!p) return res.status(404).send("Preview not found");
 
-  // Strip /p/:id from path before proxying to Next
+  // Strip /p/:id before proxying to Next
   req.url = req.url.replace(`/p/${id}`, "") || "/";
   p.lastHit = Date.now();
   proxy.web(req, res, {
