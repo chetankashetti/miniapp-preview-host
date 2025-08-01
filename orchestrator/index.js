@@ -207,17 +207,18 @@ async function writeFiles(dir, files) {
 }
 
 function startDev(id, dir, port, logs) {
-  const env = { ...process.env, NODE_ENV: "development", PORT: String(port) };
+  const env = {
+    ...process.env,
+    NODE_ENV: "development",
+    PORT: String(port),
+    ASSET_PREFIX: `/p/${id}`,
+  };
 
   // Use pnpm exec to call the binary directly (no script/-- arg issues)
   const proc = spawn(
     "pnpm",
-    ["run", "dev", "-p", String(port), "-H", "127.0.0.1"],
-    {
-      cwd: dir,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    }
+    ["exec", "next", "dev", "-p", String(port), "-H", "127.0.0.1"],
+    { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"] }
   );
 
   const onData = (d) => {
