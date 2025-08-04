@@ -247,7 +247,7 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: "unauthorized" });
 }
 
-function waitForReady(port, timeoutMs = 60000) {
+function waitForReady(port, timeoutMs = 1000000) {
   const start = Date.now();
   return new Promise((resolve) => {
     const tryOnce = () => {
@@ -328,7 +328,7 @@ app.post("/previews", requireAuth, async (req, res) => {
     rec.proc = proc;
 
     if (wait) {
-      const ok = await waitForReady(port, 60000);
+      const ok = await waitForReady(port, 1000000);
       if (!ok) {
         previews.delete(id);
         return res.status(500).json({
