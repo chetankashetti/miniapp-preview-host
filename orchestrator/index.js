@@ -83,57 +83,35 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
   });
 }
 
-/* ========= PNPM install (robust) ========= */
+/* ========= NPM install (robust) ========= */
 
-async function pnpmInstall(dir, { id, storeDir, logs }) {
+async function npmInstall(dir, { id, storeDir, logs }) {
+  const startTime = Date.now();
+  console.log(`[${id}] Starting npm install...`);
+  
   await fs.mkdir(storeDir, { recursive: true });
-
-  // Respect packageManager: "pnpm@x"
-  let ver = null;
-  try {
-    const pkg = JSON.parse(
-      await fs.readFile(path.join(dir, "package.json"), "utf8")
-    );
-    const m = String(pkg.packageManager || "").match(/pnpm@([\d.]+)/);
-    if (m) ver = m[1];
-  } catch {}
 
   const env = {
     ...process.env,
     NODE_ENV: "development", // include devDependencies (Next)
     CI: "1", // non-interactive
-    PNPM_STORE_DIR: storeDir, // persistent store
   };
 
   const baseArgs = [
     "install",
     "--prefer-offline",
-    "--frozen-lockfile",
-    "--prod=false", // install devDependencies (Next)
-    "--reporter",
-    "append-only",
   ];
 
   try {
-    if (ver)
-      await run("npx", ["-y", `pnpm@${ver}`, ...baseArgs], {
-        id,
-        cwd: dir,
-        env,
-        logs,
-      });
-    else await run("pnpm", baseArgs, { id, cwd: dir, env, logs });
-  } catch {
-    // fallback without --frozen-lockfile
-    const retry = baseArgs.filter((a) => a !== "--frozen-lockfile");
-    if (ver)
-      await run("npx", ["-y", `pnpm@${ver}`, ...retry], {
-        id,
-        cwd: dir,
-        env,
-        logs,
-      });
-    else await run("pnpm", retry, { id, cwd: dir, env, logs });
+    console.log(`[${id}] Running npm install with --prefer-offline...`);
+    await run("npm", baseArgs, { id, cwd: dir, env, logs });
+    console.log(`[${id}] npm install completed in ${Date.now() - startTime}ms`);
+  } catch (error) {
+    console.log(`[${id}] npm install with --prefer-offline failed, retrying without...`);
+    // fallback without --prefer-offline
+    const retry = baseArgs.filter((a) => a !== "--prefer-offline");
+    await run("npm", retry, { id, cwd: dir, env, logs });
+    console.log(`[${id}] npm install retry completed in ${Date.now() - startTime}ms`);
   }
 
   // Verify Next binary exists
@@ -181,6 +159,9 @@ function nextFreePort() {
 }
 
 async function copyBoilerplate(dst) {
+  const startTime = Date.now();
+  console.log(`[copyBoilerplate] Starting boilerplate copy to ${dst}...`);
+  
   await fs.mkdir(dst, { recursive: true });
   // copy while excluding build dirs & node_modules
   await run("sh", [
@@ -193,6 +174,8 @@ async function copyBoilerplate(dst) {
   for (const d of ["node_modules", ".next", ".turbo", "dist", "build"]) {
     await fs.rm(path.join(dst, d), { recursive: true, force: true });
   }
+  
+  console.log(`[copyBoilerplate] Boilerplate copy completed in ${Date.now() - startTime}ms`);
 }
 
 async function writeFiles(dir, files) {
@@ -207,6 +190,9 @@ async function writeFiles(dir, files) {
 }
 
 function startDev(id, dir, port, logs) {
+  const startTime = Date.now();
+  console.log(`[${id}] Starting Next.js dev server on port ${port}...`);
+  
   const env = {
     ...process.env,
     NODE_ENV: "development",
@@ -214,10 +200,10 @@ function startDev(id, dir, port, logs) {
     ASSET_PREFIX: `/p/${id}`,
   };
 
-  // Use pnpm exec to call the binary directly (no script/-- arg issues)
+  // Use npx to call next dev directly
   const proc = spawn(
-    "pnpm",
-    ["exec", "next", "dev", "-p", String(port), "-H", "127.0.0.1"],
+    "npx",
+    ["next", "dev", "-p", String(port), "-H", "127.0.0.1"],
     { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"] }
   );
 
@@ -279,6 +265,114 @@ const server = http.createServer(app);
 
 app.use(bodyParser.json({ limit: "50mb" }));
 
+// Deploy endpoint (compatibility with minidev app)
+app.post("/deploy", requireAuth, async (req, res) => {
+  const deployStartTime = Date.now();
+  const projectId = req.body.hash;
+  const files = req.body.files;
+  const wait = req.body.wait ?? true; // default: wait for readiness
+  if (!projectId) return res.status(400).json({ error: "hash required" });
+
+  console.log(`[${projectId}] Starting deploy process...`);
+  
+  try {
+    // Convert files object to array format expected by /previews
+    const filesArray = Object.entries(files || {}).map(([path, content]) => ({
+      path,
+      content
+    }));
+
+    // If running, patch files and return
+    if (previews.has(projectId)) {
+      const running = previews.get(projectId);
+      await writeFiles(running.dir, filesArray);
+      running.lastHit = Date.now();
+      return res.json({
+        previewUrl: `localhost:${PORT}/p/${projectId}`,
+        vercelUrl: `localhost:${PORT}/p/${projectId}`,
+        aliasSuccess: true,
+        isNewDeployment: false,
+        hasPackageChanges: false,
+        status: running.status || "running",
+        port: running.port,
+      });
+    }
+
+    const dir = path.join(PREVIEWS_ROOT, projectId);
+
+    // Clean slate (avoid stale node_modules prompts)
+    if (existsSync(dir)) {
+      console.log(`[${projectId}] Cleaning existing directory...`);
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+
+    // Fresh: copy boilerplate, write deltas
+    console.log(`[${projectId}] Setting up fresh preview...`);
+    await copyBoilerplate(dir);
+    await writeFiles(dir, filesArray);
+
+    // Install (always on fresh create)
+    const logs = makeRing();
+    await npmInstall(dir, { id: projectId, storeDir: PNPM_STORE, logs });
+
+    // Start dev (record BEFORE spawn to avoid races)
+    const port = nextFreePort();
+    const rec = {
+      port,
+      proc: null,
+      dir,
+      lastHit: Date.now(),
+      status: "starting",
+      logs,
+      lastError: null,
+    };
+    previews.set(projectId, rec);
+    const proc = startDev(projectId, dir, port, logs);
+    rec.proc = proc;
+
+    if (wait) {
+      console.log(`[${projectId}] Waiting for dev server to be ready...`);
+      const waitStartTime = Date.now();
+      const ok = await waitForReady(port, 1000000);
+      console.log(`[${projectId}] Dev server ready check took ${Date.now() - waitStartTime}ms`);
+      
+      if (!ok) {
+        previews.delete(projectId);
+        return res.status(500).json({
+          error: "dev did not become ready in time",
+          status: "starting",
+          logs: logs.text().slice(-4000),
+        });
+      }
+      rec.status = "running";
+      console.log(`[${projectId}] Deploy completed successfully in ${Date.now() - deployStartTime}ms`);
+      return res.json({ 
+        previewUrl: `localhost:${PORT}/p/${projectId}`,
+        vercelUrl: `localhost:${PORT}/p/${projectId}`,
+        aliasSuccess: true,
+        isNewDeployment: true,
+        hasPackageChanges: true,
+        status: "running", 
+        port 
+      });
+    }
+
+    console.log(`[${projectId}] Deploy completed (no wait) in ${Date.now() - deployStartTime}ms`);
+    return res.json({ 
+      previewUrl: `localhost:${PORT}/p/${projectId}`,
+      vercelUrl: `localhost:${PORT}/p/${projectId}`,
+      aliasSuccess: true,
+      isNewDeployment: true,
+      hasPackageChanges: true,
+      status: "starting", 
+      port 
+    });
+  } catch (e) {
+    console.error(`[${projectId}] Deploy failed after ${Date.now() - deployStartTime}ms:`, e);
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
 // Create/patch preview
 app.post("/previews", requireAuth, async (req, res) => {
   const id = req.body.id;
@@ -310,7 +404,7 @@ app.post("/previews", requireAuth, async (req, res) => {
 
     // Install (always on fresh create)
     const logs = makeRing();
-    await pnpmInstall(dir, { id, storeDir: PNPM_STORE, logs });
+    await npmInstall(dir, { id, storeDir: PNPM_STORE, logs });
 
     // Start dev (record BEFORE spawn to avoid races)
     const port = nextFreePort();
@@ -393,7 +487,7 @@ app.use("/p/:id", async (req, res) => {
       // ensure deps (safe if already present)
       if (await needInstall(dir)) {
         try {
-          await pnpmInstall(dir, { id, storeDir: PNPM_STORE, logs });
+          await npmInstall(dir, { id, storeDir: PNPM_STORE, logs });
         } catch (e) {
           return res
             .status(500)
