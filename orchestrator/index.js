@@ -542,6 +542,102 @@ server.on("upgrade", (req, socket, head) => {
   proxy.ws(req, socket, head, { target: `ws://127.0.0.1:${p.port}` });
 });
 
+// Command execution endpoint for AI context gathering
+app.post("/previews/:id/execute", requireAuth, async (req, res) => {
+  const id = req.params.id;
+  const { command, args, workingDirectory = "." } = req.body;
+  
+  if (!command) {
+    return res.status(400).json({ error: "Command is required" });
+  }
+
+  // Security: Only allow whitelisted commands
+  const allowedCommands = [
+    "grep", "find", "tree", "cat", "head", "tail", "wc", "ls", "pwd",
+    "file", "which", "type", "dirname", "basename", "realpath"
+  ];
+
+  if (!allowedCommands.includes(command)) {
+    return res.status(400).json({ 
+      error: `Command '${command}' is not allowed`,
+      allowedCommands 
+    });
+  }
+
+  // Security: Limit arguments
+  if (args && args.length > 10) {
+    return res.status(400).json({ error: "Too many arguments" });
+  }
+
+  // Security: Check for dangerous patterns
+  const dangerousPatterns = [
+    /[;&|`$]/,           // Command chaining
+    /\.\./,              // Directory traversal
+    /\/etc\/|\/proc\/|\/sys\//, // System directories
+    /rm\s|del\s|mv\s|cp\s/,     // File operations
+    /wget|curl|nc\s|netcat/,    // Network operations
+    /eval|exec|system/,         // Code execution
+  ];
+
+  const allArgs = args || [];
+  for (const arg of allArgs) {
+    if (dangerousPatterns.some(pattern => pattern.test(arg))) {
+      return res.status(400).json({ 
+        error: `Dangerous pattern detected in argument: ${arg}` 
+      });
+    }
+  }
+
+  try {
+    const p = previews.get(id);
+    if (!p) {
+      return res.status(404).json({ error: "Preview not found" });
+    }
+
+    const projectDir = p.dir;
+    const fullWorkingDir = path.join(projectDir, workingDirectory);
+    
+    // Security: Ensure working directory is within project
+    if (!fullWorkingDir.startsWith(projectDir)) {
+      return res.status(400).json({ error: "Working directory outside project bounds" });
+    }
+
+    if (!existsSync(fullWorkingDir)) {
+      return res.status(400).json({ error: "Working directory does not exist" });
+    }
+
+    console.log(`[${id}] Executing command: ${command} ${allArgs.join(" ")}`);
+    
+    const startTime = Date.now();
+    const result = await run(command, allArgs, { 
+      id, 
+      cwd: fullWorkingDir,
+      env: { ...process.env, NODE_ENV: "development" }
+    });
+    const executionTime = Date.now() - startTime;
+
+    console.log(`[${id}] Command completed in ${executionTime}ms`);
+
+    res.json({
+      success: true,
+      command,
+      args: allArgs,
+      workingDirectory,
+      executionTime,
+      output: result
+    });
+
+  } catch (error) {
+    console.error(`[${id}] Command execution failed:`, error);
+    res.status(500).json({
+      success: false,
+      error: error.message || "Command execution failed",
+      command,
+      args: allArgs
+    });
+  }
+});
+
 /* ========= Idle reaper (optional; 30 min) ========= */
 
 setInterval(() => {
