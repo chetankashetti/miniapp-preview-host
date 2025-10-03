@@ -103,18 +103,28 @@ async function deployToVercel(dir, projectId, logs) {
     };
 
     // Deploy to Vercel (use npx if global install failed)
+    let deploymentUrl;
+    let output;
     if (vercelInstalled) {
-      await run("vercel", ["--token", VERCEL_TOKEN, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, VERCEL_TOKEN, CI: "1" }, logs });
+      output = await run("vercel", ["--token", VERCEL_TOKEN, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, VERCEL_TOKEN, CI: "1" }, logs });
     } else {
-      await run("npx", ["vercel", "--token", VERCEL_TOKEN, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, VERCEL_TOKEN, CI: "1" }, logs });
+      output = await run("npx", ["vercel", "--token", VERCEL_TOKEN, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, VERCEL_TOKEN, CI: "1" }, logs });
     }
     
     console.log(`[${projectId}] ✅ Vercel deployment completed`);
     
-    // Use standardized Vercel URL format
-    const deploymentUrl = `https://${projectId}.vercel.app`;
-    console.log(`[${projectId}] 🌐 Vercel deployment URL: ${deploymentUrl}`);
-    return deploymentUrl;
+    // Extract the actual deployment URL from Vercel CLI output
+    // Look for URLs in the output (e.g., "https://project-name-xyz123.vercel.app")
+    const urlMatch = output.match(/https:\/\/[^\s]+\.vercel\.app/);
+    if (urlMatch) {
+      deploymentUrl = urlMatch[0];
+      console.log(`[${projectId}] 🌐 Found Vercel deployment URL: ${deploymentUrl}`);
+      return deploymentUrl;
+    } else {
+      // No Vercel URL found in output, fall back to local deployment
+      console.log(`[${projectId}] ⚠️ No Vercel URL found in output, falling back to local deployment`);
+      throw new Error("Vercel deployment completed but no URL found in output");
+    }
     
   } catch (error) {
     console.error(`[${projectId}] ❌ Vercel deployment failed:`, error);
@@ -260,8 +270,10 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    let output = "";
     const onData = (d) => {
       const line = `${label} ${d.toString()}`;
+      output += d.toString();
       process.stdout.write(line);
       logs?.push(line);
     };
@@ -269,7 +281,7 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
     child.stderr.on("data", onData);
 
     child.on("exit", (code) => {
-      if (code === 0) resolve();
+      if (code === 0) resolve(output);
       else {
         const msg = `${cmd} exited ${code}`;
         console.error(`${label} ${msg}`);
@@ -545,18 +557,39 @@ async function handleExternalDeployment(projectId, filesArray, platform, res, de
     let deploymentUrl;
     let platformEnabled = false;
     
-    if (platform === "vercel" && ENABLE_VERCEL_DEPLOYMENT && VERCEL_TOKEN) {
-      deploymentUrl = await deployToVercel(dir, projectId, logs);
-      platformEnabled = true;
-    } else if (platform === "netlify" && ENABLE_NETLIFY_DEPLOYMENT && NETLIFY_TOKEN) {
-      deploymentUrl = await deployToNetlify(dir, projectId, logs);
-      platformEnabled = true;
+    try {
+      if (platform === "vercel" && ENABLE_VERCEL_DEPLOYMENT && VERCEL_TOKEN) {
+        deploymentUrl = await deployToVercel(dir, projectId, logs);
+        platformEnabled = true;
+      } else if (platform === "netlify" && ENABLE_NETLIFY_DEPLOYMENT && NETLIFY_TOKEN) {
+        deploymentUrl = await deployToNetlify(dir, projectId, logs);
+        platformEnabled = true;
+      }
+    } catch (deploymentError) {
+      console.error(`[${projectId}] ${platform} deployment failed:`, deploymentError.message);
+      console.log(`[${projectId}] Falling back to local deployment`);
+      return handleLocalDeployment(projectId, filesArray, true, res, deployStartTime);
     }
 
     if (!platformEnabled) {
       console.log(`[${projectId}] ${platform} deployment disabled or not configured, falling back to local`);
       return handleLocalDeployment(projectId, filesArray, true, res, deployStartTime);
     }
+
+    // Register external deployment in previews map for updates
+    const rec = {
+      port: null,
+      proc: null,
+      dir,
+      lastHit: Date.now(),
+      status: "deployed",
+      logs,
+      lastError: null,
+      externalPlatform: platform,
+      deploymentUrl
+    };
+    previews.set(projectId, rec);
+    console.log(`[${projectId}] Registered external deployment in previews map`);
 
     console.log(`[${projectId}] External deployment completed in ${Date.now() - deployStartTime}ms`);
     return res.json({
@@ -699,36 +732,48 @@ app.post("/previews", requireAuth, async (req, res) => {
     // If running, patch files and return
     if (previews.has(id)) {
       const running = previews.get(id);
-      await writeFiles(running.dir, files);
-      running.lastHit = Date.now();
-      
-      // Check if there's a Vercel deployment to update
-      const vercelDir = path.join(PREVIEWS_ROOT, `${id}-vercel`);
-      if (existsSync(vercelDir)) {
-        console.log(`[${id}] 🔄 Updating Vercel deployment with file patches...`);
+
+      // Check if this is an external deployment
+      if (running.externalPlatform) {
+        console.log(`[${id}] 🔄 Updating ${running.externalPlatform} deployment with file patches...`);
         try {
-          // Update files in Vercel deployment directory
-          await writeFiles(vercelDir, files);
-          
-          // Trigger Vercel redeploy
+          // Update files in external deployment directory
+          await writeFiles(running.dir, files);
+
+          // Trigger platform redeploy
           const logs = makeRing();
-          const deploymentUrl = await deployToVercel(vercelDir, id, logs);
-          
-          console.log(`[${id}] ✅ Vercel deployment updated successfully: ${deploymentUrl}`);
-          
+          let deploymentUrl;
+
+          if (running.externalPlatform === "vercel") {
+            deploymentUrl = await deployToVercel(running.dir, id, logs);
+          } else if (running.externalPlatform === "netlify") {
+            deploymentUrl = await deployToNetlify(running.dir, id, logs);
+          }
+
+          running.lastHit = Date.now();
+          running.deploymentUrl = deploymentUrl;
+
+          console.log(`[${id}] ✅ ${running.externalPlatform} deployment updated successfully: ${deploymentUrl}`);
+
           return res.json({
-            url: `/p/${id}`,
-            status: running.status || "running",
-            port: running.port,
+            url: deploymentUrl,
+            status: "deployed",
+            platform: running.externalPlatform,
             vercelUrl: deploymentUrl,
-            vercelUpdated: true,
+            deploymentUpdated: true,
           });
-        } catch (vercelError) {
-          console.error(`[${id}] ⚠️ Vercel update failed, continuing with local update:`, vercelError.message);
-          // Continue with local update even if Vercel fails
+        } catch (deploymentError) {
+          console.error(`[${id}] ⚠️ ${running.externalPlatform} update failed:`, deploymentError.message);
+          return res.status(500).json({
+            error: `${running.externalPlatform} deployment update failed: ${deploymentError.message}`
+          });
         }
       }
-      
+
+      // Local deployment update
+      await writeFiles(running.dir, files);
+      running.lastHit = Date.now();
+
       return res.json({
         url: `/p/${id}`,
         status: running.status || "running",
