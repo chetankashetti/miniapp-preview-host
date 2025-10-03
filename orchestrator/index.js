@@ -32,7 +32,7 @@ const BASE_PORT = Number(process.env.BASE_PORT || 4000);
 const ENABLE_VERCEL_DEPLOYMENT = process.env.ENABLE_VERCEL_DEPLOYMENT === "true";
 const ENABLE_NETLIFY_DEPLOYMENT = process.env.ENABLE_NETLIFY_DEPLOYMENT === "true";
 const ENABLE_CONTRACT_DEPLOYMENT = process.env.ENABLE_CONTRACT_DEPLOYMENT === "true";
-const VERCEL_TOKEN = process.env.VERCEL_TOKEN || "";
+const DEPLOYMENT_TOKEN_SECRET = process.env.DEPLOYMENT_TOKEN_SECRET || "";
 const NETLIFY_TOKEN = process.env.NETLIFY_TOKEN || "";
 const BASE_SEPOLIA_RPC_URL = process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org";
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
@@ -65,7 +65,7 @@ function makeRing(cap = 4000) {
 /* ========= Deployment helpers ========= */
 
 async function deployToVercel(dir, projectId, logs) {
-  if (!ENABLE_VERCEL_DEPLOYMENT || !VERCEL_TOKEN) {
+  if (!ENABLE_VERCEL_DEPLOYMENT || !DEPLOYMENT_TOKEN_SECRET) {
     throw new Error("Vercel deployment is disabled or token not provided");
   }
 
@@ -99,16 +99,16 @@ async function deployToVercel(dir, projectId, logs) {
     // Set up environment variables
     const env = {
       ...process.env,
-      VERCEL_TOKEN,
+      DEPLOYMENT_TOKEN_SECRET,
     };
 
     // Deploy to Vercel (use npx if global install failed)
     let deploymentUrl;
     let output;
     if (vercelInstalled) {
-      output = await run("vercel", ["--token", VERCEL_TOKEN, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, VERCEL_TOKEN, CI: "1" }, logs });
+      output = await run("vercel", ["--token", DEPLOYMENT_TOKEN_SECRET, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, DEPLOYMENT_TOKEN_SECRET, CI: "1" }, logs });
     } else {
-      output = await run("npx", ["vercel", "--token", VERCEL_TOKEN, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, VERCEL_TOKEN, CI: "1" }, logs });
+      output = await run("npx", ["vercel", "--token", DEPLOYMENT_TOKEN_SECRET, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, DEPLOYMENT_TOKEN_SECRET, CI: "1" }, logs });
     }
     
     console.log(`[${projectId}] ✅ Vercel deployment completed`);
@@ -395,7 +395,7 @@ async function writeFiles(dir, files) {
       await fs.mkdir(path.dirname(full), { recursive: true });
       await fs.writeFile(full, f.content, "utf8");
     })
-  );
+  );  
 }
 
 function startDev(id, dir, port, logs) {
@@ -558,7 +558,7 @@ async function handleExternalDeployment(projectId, filesArray, platform, res, de
     let platformEnabled = false;
     
     try {
-      if (platform === "vercel" && ENABLE_VERCEL_DEPLOYMENT && VERCEL_TOKEN) {
+      if (platform === "vercel" && ENABLE_VERCEL_DEPLOYMENT && DEPLOYMENT_TOKEN_SECRET) {
         deploymentUrl = await deployToVercel(dir, projectId, logs);
         platformEnabled = true;
       } else if (platform === "netlify" && ENABLE_NETLIFY_DEPLOYMENT && NETLIFY_TOKEN) {
