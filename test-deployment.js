@@ -15,7 +15,7 @@ console.log("📝 Environment Configuration:");
 console.log(`PORT: ${process.env.PORT || 8080}`);
 console.log(`ENABLE_VERCEL_DEPLOYMENT: ${process.env.ENABLE_VERCEL_DEPLOYMENT || "false"}`);
 console.log(`ENABLE_NETLIFY_DEPLOYMENT: ${process.env.ENABLE_NETLIFY_DEPLOYMENT || "false"}`);
-console.log(`VERCEL_TOKEN: ${process.env.VERCEL_TOKEN ? "***" : "not set"}`);
+console.log(`DEPLOYMENT_TOKEN_SECRET: ${process.env.DEPLOYMENT_TOKEN_SECRET ? "***" : "not set"}`);
 console.log(`NETLIFY_TOKEN: ${process.env.NETLIFY_TOKEN ? "***" : "not set"}\n`);
 
 // Validate deployment configuration
@@ -42,8 +42,8 @@ function validateConfiguration() {
   
   // Check external deployment configuration
   if (process.env.ENABLE_VERCEL_DEPLOYMENT === "true") {
-    if (!process.env.VERCEL_TOKEN) {
-      issues.push("VERCEL_DEPLOYMENT enabled but VERCEL_TOKEN not set");
+    if (!process.env.DEPLOYMENT_TOKEN_SECRET) {
+      issues.push("VERCEL_DEPLOYMENT enabled but DEPLOYMENT_TOKEN_SECRET not set");
     } else {
       console.log("✅ Vercel deployment configured");
     }
@@ -151,7 +151,7 @@ Examples:
   TEST_AUTH_TOKEN=my-secret-token node test-deployment.js
   
   # Test external deployments (requires tokens)
-  ENABLE_VERCEL_DEPLOYMENT=true VERCEL_TOKEN=your-token node test-deployment.js
+  ENABLE_VERCEL_DEPLOYMENT=true DEPLOYMENT_TOKEN_SECRET=your-token node test-deployment.js
   `);
   process.exit(0);
 }

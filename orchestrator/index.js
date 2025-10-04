@@ -16,16 +16,23 @@ import httpProxy from "http-proxy"; // CJS default import
 
 const PORT = process.env.PORT || 8080;
 
-// Paths (env-overridable)
+// Environment detection
+const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT === "true" || process.env.FORCE_EXTERNAL_DEPLOYMENT === "true";
+const IS_LOCAL = !IS_RAILWAY;
+
+// Paths (env-overridable, Railway-optimized)
 const BOILERPLATE = process.env.BOILERPLATE_DIR || "/srv/boilerplate";
-const PREVIEWS_ROOT = process.env.PREVIEWS_ROOT || "/srv/previews";
-const PNPM_STORE =
-  process.env.PNPM_STORE_DIR || path.join(PREVIEWS_ROOT, ".pnpm-store");
+const PREVIEWS_ROOT = IS_RAILWAY 
+  ? (process.env.PREVIEWS_ROOT || "/tmp/previews")  // Use /tmp for Railway
+  : (process.env.PREVIEWS_ROOT || "/srv/previews"); // Use /srv for local
+const PNPM_STORE = IS_RAILWAY
+  ? (process.env.PNPM_STORE_DIR || "/tmp/.pnpm-store")  // Use /tmp for Railway
+  : (process.env.PNPM_STORE_DIR || path.join(PREVIEWS_ROOT, ".pnpm-store")); // Use /srv for local
 
 // Auth (Bearer) for management endpoints only
 const AUTH_TOKEN = process.env.PREVIEW_AUTH_TOKEN || "";
 
-// Dev port base
+// Dev port base (only used for local deployments)
 const BASE_PORT = Number(process.env.BASE_PORT || 4000);
 
 // Deployment feature flags
@@ -36,6 +43,9 @@ const DEPLOYMENT_TOKEN_SECRET = process.env.DEPLOYMENT_TOKEN_SECRET || "";
 const NETLIFY_TOKEN = process.env.NETLIFY_TOKEN || "";
 const BASE_SEPOLIA_RPC_URL = process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org";
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
+
+// Railway-specific: Force external deployment
+const FORCE_EXTERNAL_DEPLOYMENT = process.env.FORCE_EXTERNAL_DEPLOYMENT === "true";
 
 /* ========= Small utils ========= */
 
@@ -485,7 +495,7 @@ app.post("/deploy", requireAuth, async (req, res) => {
   if (!projectId) return res.status(400).json({ error: "hash required" });
   if (!files) return res.status(400).json({ error: "files required" });
 
-  console.log(`[${projectId}] Starting deploy process...`);
+  console.log(`[${projectId}] Starting deploy process... (Environment: ${IS_RAILWAY ? 'Railway' : 'Local'})`);
   
   try {
     // Convert files object to array format
@@ -494,18 +504,31 @@ app.post("/deploy", requireAuth, async (req, res) => {
       content
     }));
 
+    // Railway-specific: Force external deployment if configured
+    const effectiveDeployToExternal = IS_RAILWAY && FORCE_EXTERNAL_DEPLOYMENT 
+      ? (deployToExternal || "vercel")  // Default to Vercel on Railway
+      : deployToExternal;
+
     // Check if external deployment is requested and enabled
-    const shouldDeployExternal = deployToExternal && 
-      (deployToExternal === "vercel" || deployToExternal === "netlify");
+    const shouldDeployExternal = effectiveDeployToExternal && 
+      (effectiveDeployToExternal === "vercel" || effectiveDeployToExternal === "netlify");
     
     if (shouldDeployExternal && 
-        ((deployToExternal === "vercel" && ENABLE_VERCEL_DEPLOYMENT) ||
-         (deployToExternal === "netlify" && ENABLE_NETLIFY_DEPLOYMENT))) {
-      console.log(`[${projectId}] External deployment requested to ${deployToExternal}`);
-      return await handleExternalDeployment(projectId, filesArray, deployToExternal, res, deployStartTime);
+        ((effectiveDeployToExternal === "vercel" && ENABLE_VERCEL_DEPLOYMENT) ||
+         (effectiveDeployToExternal === "netlify" && ENABLE_NETLIFY_DEPLOYMENT))) {
+      console.log(`[${projectId}] External deployment requested to ${effectiveDeployToExternal}`);
+      return await handleExternalDeployment(projectId, filesArray, effectiveDeployToExternal, res, deployStartTime);
     }
 
-    // Default: Local deployment flow
+    // Railway-specific: Return error if external deployment not available
+    if (IS_RAILWAY && FORCE_EXTERNAL_DEPLOYMENT) {
+      return res.status(400).json({
+        error: "External deployment required on Railway. Please configure Vercel or Netlify deployment.",
+        suggestion: "Set ENABLE_VERCEL_DEPLOYMENT=true and DEPLOYMENT_TOKEN_SECRET, or ENABLE_NETLIFY_DEPLOYMENT=true and NETLIFY_TOKEN"
+      });
+    }
+
+    // Default: Local deployment flow (only for local environment)
     return await handleLocalDeployment(projectId, filesArray, wait, res, deployStartTime);
     
   } catch (e) {
@@ -770,17 +793,32 @@ app.post("/previews", requireAuth, async (req, res) => {
         }
       }
 
-      // Local deployment update
-      await writeFiles(running.dir, files);
-      running.lastHit = Date.now();
+      // Local deployment update (only for local environment)
+      if (IS_LOCAL) {
+        await writeFiles(running.dir, files);
+        running.lastHit = Date.now();
 
-      return res.json({
-        url: `/p/${id}`,
-        status: running.status || "running",
-        port: running.port,
+        return res.json({
+          url: `/p/${id}`,
+          status: running.status || "running",
+          port: running.port,
+        });
+      }
+
+      // Railway: No local deployments
+      return res.status(400).json({
+        error: "Local previews not supported on Railway. Use external deployment."
       });
     }
 
+    // Railway-specific: No local preview creation
+    if (IS_RAILWAY && FORCE_EXTERNAL_DEPLOYMENT) {
+      return res.status(400).json({
+        error: "Local previews not supported on Railway. Use external deployment."
+      });
+    }
+
+    // Local environment: Create new local preview
     const dir = path.join(PREVIEWS_ROOT, id);
 
     // Clean slate (avoid stale node_modules prompts)
@@ -862,12 +900,34 @@ app.get("/previews/:id/logs", (req, res) => {
   res.type("text/plain").send(p.logs?.text?.() || "");
 });
 
+// Health check endpoint (Railway-specific)
+app.get("/health", (req, res) => {
+  res.json({ 
+    status: "healthy", 
+    timestamp: new Date().toISOString(),
+    platform: IS_RAILWAY ? "railway" : "local",
+    environment: IS_RAILWAY ? "production" : "development",
+    externalDeployments: previews.size,
+    features: {
+      vercelDeployment: ENABLE_VERCEL_DEPLOYMENT,
+      netlifyDeployment: ENABLE_NETLIFY_DEPLOYMENT,
+      contractDeployment: ENABLE_CONTRACT_DEPLOYMENT,
+      forceExternalDeployment: FORCE_EXTERNAL_DEPLOYMENT
+    }
+  });
+});
+
 // Proxy preview content (NO AUTH) + auto-restart if folder exists
 app.use("/p/:id", async (req, res) => {
   const id = req.params.id;
   let p = previews.get(id);
 
   if (!p) {
+    // Railway-specific: Redirect to external deployment if available
+    if (IS_RAILWAY && FORCE_EXTERNAL_DEPLOYMENT) {
+      return res.status(404).send("Preview not found. Use external deployment.");
+    }
+
     const dir = path.join(PREVIEWS_ROOT, id);
     if (existsSync(dir)) {
       const logs = makeRing();
@@ -911,13 +971,25 @@ app.use("/p/:id", async (req, res) => {
 
   if (!p) return res.status(404).send("Preview not found");
 
-  // Strip /p/:id before proxying to Next
-  req.url = req.url.replace(`/p/${id}`, "") || "/";
-  p.lastHit = Date.now();
-  proxy.web(req, res, {
-    target: `http://127.0.0.1:${p.port}`,
-    changeOrigin: true,
-  });
+  // Railway-specific: Redirect to external deployment URL
+  if (IS_RAILWAY && p.externalPlatform && p.deploymentUrl) {
+    return res.redirect(p.deploymentUrl);
+  }
+
+  // Local environment: Proxy to local dev server
+  if (IS_LOCAL && p.port) {
+    // Strip /p/:id before proxying to Next
+    req.url = req.url.replace(`/p/${id}`, "") || "/";
+    p.lastHit = Date.now();
+    proxy.web(req, res, {
+      target: `http://127.0.0.1:${p.port}`,
+      changeOrigin: true,
+    });
+    return;
+  }
+
+  // Fallback
+  return res.status(404).send("Preview not available");
 });
 
 // WebSocket (HMR) pass-through (NO AUTH)
@@ -1046,7 +1118,14 @@ setInterval(() => {
 const appStart = async () => {
   await fs.mkdir(PREVIEWS_ROOT, { recursive: true });
   await fs.mkdir(PNPM_STORE, { recursive: true });
+  
   console.log(`Preview host starting on ${PORT}`);
+  console.log(`Environment: ${IS_RAILWAY ? 'Railway' : 'Local'}`);
+  console.log(`External deployment forced: ${FORCE_EXTERNAL_DEPLOYMENT}`);
+  console.log(`Vercel enabled: ${ENABLE_VERCEL_DEPLOYMENT}`);
+  console.log(`Netlify enabled: ${ENABLE_NETLIFY_DEPLOYMENT}`);
+  console.log(`Contract deployment enabled: ${ENABLE_CONTRACT_DEPLOYMENT}`);
+  
   server.listen(PORT, () => console.log(`Listening on ${PORT}`));
 };
 

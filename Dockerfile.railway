@@ -1,0 +1,43 @@
+# Railway-optimized Dockerfile for Preview Host
+
+FROM node:22-alpine
+
+# Install system dependencies
+RUN apk add --no-cache bash git tar gzip
+
+# Install global npm packages for deployment
+RUN npm install -g vercel netlify-cli
+
+# Create working directories
+RUN mkdir -p /srv/.pnpm-store /tmp/previews /tmp/.pnpm-store /srv/orchestrator
+ENV PNPM_STORE_DIR=/tmp/.pnpm-store
+ENV PREVIEWS_ROOT=/tmp/previews
+
+WORKDIR /srv
+
+# Clone boilerplate repository
+ARG BOILERPLATE_REPO="https://github.com/chetankashetti/miniapp-preview-host"
+ARG BOILERPLATE_REF="main"
+RUN git clone --filter=blob:none --depth=1 -b "$BOILERPLATE_REF" "$BOILERPLATE_REPO" /srv/boilerplate
+
+# Prewarm npm cache for the boilerplate
+RUN cd /srv/boilerplate && npm install --prefer-offline
+
+# Install orchestrator dependencies
+COPY orchestrator/package.json /srv/orchestrator/package.json
+RUN npm --prefix /srv/orchestrator install --prod --prefer-offline
+
+# Copy orchestrator source (using unified index.js)
+COPY orchestrator/ /srv/orchestrator/
+
+# Set Railway-specific environment variables
+ENV FORCE_EXTERNAL_DEPLOYMENT=true
+ENV RAILWAY_ENVIRONMENT=true
+ENV NODE_ENV=production
+
+# Expose Railway port
+EXPOSE 8080
+
+# Start the orchestrator
+WORKDIR /srv/orchestrator
+CMD ["node", "index.js"]
