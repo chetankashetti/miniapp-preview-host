@@ -155,15 +155,74 @@ async function deployContracts(dir, projectId, logs) {
     return null;
   }
 
+  console.log(`[${projectId}] 🔍 Checking for contracts directory in: ${dir}`);
+
+  // Debug: List all contents of the deployment directory
+  try {
+    const dirContents = await fs.readdir(dir);
+    console.log(`[${projectId}] Deployment directory contents:`, dirContents);
+  } catch (error) {
+    console.error(`[${projectId}] Error reading deployment directory:`, error.message);
+  }
+
   const contractsDir = path.join(dir, "contracts");
+  console.log(`[${projectId}] Looking for contracts directory at: ${contractsDir}`);
+
   if (!(await exists(contractsDir))) {
-    console.log(`[${projectId}] No contracts directory found`);
+    console.log(`[${projectId}] No contracts directory found at ${contractsDir}`);
+
+    // Check for alternative locations
+    const alternativePaths = [
+      path.join(dir, "src", "contracts"),
+      path.join(dir, "contracts", "contracts"),
+      path.join(dir, "hardhat", "contracts"),
+    ];
+
+    for (const altPath of alternativePaths) {
+      if (await exists(altPath)) {
+        console.log(`[${projectId}] Found contracts at alternative path: ${altPath}`);
+        // Use the alternative path
+        return await deployContractsFromPath(altPath, projectId, logs);
+      }
+    }
+
+    console.log(`[${projectId}] No contracts directory found in any expected location`);
     return null;
   }
 
-  console.log(`[${projectId}] 🚀 Deploying contracts to Base Sepolia testnet...`);
-  
+  console.log(`[${projectId}] Found contracts directory at: ${contractsDir}`);
+  return await deployContractsFromPath(contractsDir, projectId, logs);
+}
+
+async function deployContractsFromPath(contractsDir, projectId, logs) {
+  console.log(`[${projectId}] 🚀 Deploying contracts to Base Sepolia testnet from: ${contractsDir}`);
+
   try {
+    // Debug: List contents of contracts directory
+    try {
+      const contractsContents = await fs.readdir(contractsDir);
+      console.log(`[${projectId}] Contracts directory contents:`, contractsContents);
+    } catch (error) {
+      console.error(`[${projectId}] Error reading contracts directory:`, error.message);
+    }
+
+    // Check if we have nested contracts structure
+    const nestedContractsDir = path.join(contractsDir, "contracts");
+    const isNestedStructure = await exists(nestedContractsDir);
+
+    if (isNestedStructure) {
+      console.log(`[${projectId}] Found nested contracts structure, using nested path`);
+      // Use the nested structure
+      contractsDir = nestedContractsDir;
+    }
+
+    // Check for package.json in contracts directory
+    const packageJsonPath = path.join(contractsDir, "package.json");
+    if (!(await exists(packageJsonPath))) {
+      console.log(`[${projectId}] No package.json found in contracts directory, skipping contract deployment`);
+      return null;
+    }
+
     // Install dependencies
     console.log(`[${projectId}] Installing contract dependencies...`);
     await run("npm", ["install"], { id: projectId, cwd: contractsDir, logs });
@@ -190,7 +249,7 @@ async function deployContracts(dir, projectId, logs) {
     });
 
     console.log(`[${projectId}] ✅ Contract deployment completed`);
-    
+
     // Read deployment info if available
     const deploymentInfoPath = path.join(contractsDir, "deployment-info.json");
     if (await exists(deploymentInfoPath)) {
@@ -198,9 +257,9 @@ async function deployContracts(dir, projectId, logs) {
       console.log(`[${projectId}] 📄 Contract deployed info:`, JSON.parse(deploymentInfo));
       return JSON.parse(deploymentInfo);
     }
-    
+
     return { contractAddress: "deployed-successfully" };
-    
+
   } catch (error) {
     console.error(`[${projectId}] ❌ Contract deployment failed:`, error);
     throw error;
@@ -327,6 +386,25 @@ function nextFreePort() {
 async function copyBoilerplate(dst) {
   const startTime = Date.now();
   console.log(`[copyBoilerplate] Starting boilerplate copy to ${dst}...`);
+  console.log(`[copyBoilerplate] Source boilerplate directory: ${BOILERPLATE}`);
+
+  // Debug: Check what's in the source boilerplate directory
+  try {
+    const sourceContents = await fs.readdir(BOILERPLATE);
+    console.log(`[copyBoilerplate] Source directory contents:`, sourceContents);
+
+    // Check specifically for contracts directory
+    const contractsPath = path.join(BOILERPLATE, "contracts");
+    const contractsExists = await exists(contractsPath);
+    console.log(`[copyBoilerplate] Contracts directory exists in source: ${contractsExists}`);
+
+    if (contractsExists) {
+      const contractsContents = await fs.readdir(contractsPath);
+      console.log(`[copyBoilerplate] Contracts directory contents:`, contractsContents);
+    }
+  } catch (error) {
+    console.error(`[copyBoilerplate] Error checking source directory:`, error.message);
+  }
   
   await fs.mkdir(dst, { recursive: true });
   // copy while excluding build dirs & node_modules
@@ -339,6 +417,24 @@ async function copyBoilerplate(dst) {
   // safety: ensure none of these exist post-copy
   for (const d of ["node_modules", ".next", ".turbo", "dist", "build"]) {
     await fs.rm(path.join(dst, d), { recursive: true, force: true });
+  }
+
+  // Debug: Check what was actually copied
+  try {
+    const copiedContents = await fs.readdir(dst);
+    console.log(`[copyBoilerplate] Copied directory contents:`, copiedContents);
+
+    // Check specifically for contracts directory in destination
+    const destContractsPath = path.join(dst, "contracts");
+    const destContractsExists = await exists(destContractsPath);
+    console.log(`[copyBoilerplate] Contracts directory exists in destination: ${destContractsExists}`);
+
+    if (destContractsExists) {
+      const destContractsContents = await fs.readdir(destContractsPath);
+      console.log(`[copyBoilerplate] Destination contracts directory contents:`, destContractsContents);
+    }
+  } catch (error) {
+    console.error(`[copyBoilerplate] Error checking destination directory:`, error.message);
   }
   
   console.log(`[copyBoilerplate] Boilerplate copy completed in ${Date.now() - startTime}ms`);
@@ -537,6 +633,16 @@ async function handleExternalDeployment(projectId, filesArray, platform, res, de
       }
     } catch (deploymentError) {
       console.error(`[${projectId}] ${platform} deployment failed:`, deploymentError.message);
+      
+      // Railway-specific: Don't fallback to local deployment
+      if (IS_RAILWAY && FORCE_EXTERNAL_DEPLOYMENT) {
+        return res.status(500).json({
+          success: false,
+          error: `${platform} deployment failed: ${deploymentError.message}`,
+          details: "External deployment required on Railway. Local fallback not available."
+        });
+      }
+      
       console.log(`[${projectId}] Falling back to local deployment`);
       return handleLocalDeployment(projectId, filesArray, true, res, deployStartTime);
     }
