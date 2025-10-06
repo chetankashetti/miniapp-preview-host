@@ -155,67 +155,20 @@ async function deployContracts(dir, projectId, logs) {
     return null;
   }
 
-  console.log(`[${projectId}] 🔍 Checking for contracts directory in: ${dir}`);
-
-  // Debug: List all contents of the deployment directory
-  try {
-    const dirContents = await fs.readdir(dir);
-    console.log(`[${projectId}] Deployment directory contents:`, dirContents);
-  } catch (error) {
-    console.error(`[${projectId}] Error reading deployment directory:`, error.message);
-  }
-
   const contractsDir = path.join(dir, "contracts");
-  console.log(`[${projectId}] Looking for contracts directory at: ${contractsDir}`);
 
   if (!(await exists(contractsDir))) {
-    console.log(`[${projectId}] No contracts directory found at ${contractsDir}`);
-
-    // Check for alternative locations
-    const alternativePaths = [
-      path.join(dir, "src", "contracts"),
-      path.join(dir, "contracts", "contracts"),
-      path.join(dir, "hardhat", "contracts"),
-    ];
-
-    for (const altPath of alternativePaths) {
-      if (await exists(altPath)) {
-        console.log(`[${projectId}] Found contracts at alternative path: ${altPath}`);
-        // Use the alternative path
-        return await deployContractsFromPath(altPath, projectId, logs);
-      }
-    }
-
-    console.log(`[${projectId}] No contracts directory found in any expected location`);
+    console.log(`[${projectId}] No contracts directory found, skipping contract deployment`);
     return null;
   }
 
-  console.log(`[${projectId}] Found contracts directory at: ${contractsDir}`);
   return await deployContractsFromPath(contractsDir, projectId, logs);
 }
 
 async function deployContractsFromPath(contractsDir, projectId, logs) {
-  console.log(`[${projectId}] 🚀 Deploying contracts to Base Sepolia testnet from: ${contractsDir}`);
+  console.log(`[${projectId}] 🚀 Deploying contracts to Base Sepolia testnet...`);
 
   try {
-    // Debug: List contents of contracts directory
-    try {
-      const contractsContents = await fs.readdir(contractsDir);
-      console.log(`[${projectId}] Contracts directory contents:`, contractsContents);
-    } catch (error) {
-      console.error(`[${projectId}] Error reading contracts directory:`, error.message);
-    }
-
-    // Check if we have nested contracts structure
-    const nestedContractsDir = path.join(contractsDir, "contracts");
-    const isNestedStructure = await exists(nestedContractsDir);
-
-    if (isNestedStructure) {
-      console.log(`[${projectId}] Found nested contracts structure, using nested path`);
-      // Use the nested structure
-      contractsDir = nestedContractsDir;
-    }
-
     // Check for package.json in contracts directory
     const packageJsonPath = path.join(contractsDir, "package.json");
     if (!(await exists(packageJsonPath))) {
@@ -231,7 +184,7 @@ async function deployContractsFromPath(contractsDir, projectId, logs) {
     console.log(`[${projectId}] Compiling contracts...`);
     await run("npx", ["hardhat", "compile"], { id: projectId, cwd: contractsDir, logs });
 
-    // Deploy to Base Sepolia - use correct script path
+    // Deploy to Base Sepolia
     console.log(`[${projectId}] Deploying to Base Sepolia testnet...`);
     const env = {
       ...process.env,
@@ -240,7 +193,6 @@ async function deployContractsFromPath(contractsDir, projectId, logs) {
       HARDHAT_NETWORK: "baseSepolia"
     };
 
-    // Always use scripts/deploy.js (we know boilerplate has this structure)
     await run("npx", ["hardhat", "run", "scripts/deploy.js", "--network", "baseSepolia"], {
       id: projectId,
       cwd: contractsDir,
@@ -254,7 +206,6 @@ async function deployContractsFromPath(contractsDir, projectId, logs) {
     const deploymentInfoPath = path.join(contractsDir, "deployment-info.json");
     if (await exists(deploymentInfoPath)) {
       const deploymentInfo = await fs.readFile(deploymentInfoPath, "utf8");
-      console.log(`[${projectId}] 📄 Contract deployed info:`, JSON.parse(deploymentInfo));
       return JSON.parse(deploymentInfo);
     }
 
@@ -386,130 +337,20 @@ function nextFreePort() {
 async function copyBoilerplate(dst) {
   const startTime = Date.now();
   console.log(`[copyBoilerplate] Starting boilerplate copy to ${dst}...`);
-  console.log(`[copyBoilerplate] Source boilerplate directory: ${BOILERPLATE}`);
-
-  // Debug: Check what's in the source boilerplate directory
-  try {
-    const sourceContents = await fs.readdir(BOILERPLATE);
-    console.log(`[copyBoilerplate] Source directory contents:`, sourceContents);
-
-    // Check specifically for contracts directory
-    const contractsPath = path.join(BOILERPLATE, "contracts");
-    const contractsExists = await exists(contractsPath);
-    console.log(`[copyBoilerplate] Contracts directory exists in source: ${contractsExists}`);
-
-    if (contractsExists) {
-      const contractsContents = await fs.readdir(contractsPath);
-      console.log(`[copyBoilerplate] Contracts directory contents:`, contractsContents);
-    }
-  } catch (error) {
-    console.error(`[copyBoilerplate] Error checking source directory:`, error.message);
-  }
   
   await fs.mkdir(dst, { recursive: true });
   
-  // Debug: List what's actually in the source boilerplate before copying
-  try {
-    const sourceContents = await fs.readdir(BOILERPLATE);
-    console.log(`[copyBoilerplate] Source boilerplate contents before copy:`, sourceContents);
-    
-    // Check contracts directory specifically
-    const sourceContractsPath = path.join(BOILERPLATE, "contracts");
-    if (await exists(sourceContractsPath)) {
-      const sourceContractsContents = await fs.readdir(sourceContractsPath);
-      console.log(`[copyBoilerplate] Source contracts directory contents:`, sourceContractsContents);
-    } else {
-      console.log(`[copyBoilerplate] No contracts directory found in source boilerplate!`);
-    }
-  } catch (error) {
-    console.error(`[copyBoilerplate] Error checking source boilerplate:`, error.message);
-  }
-  
   // copy while excluding build dirs & node_modules
-  console.log(`[copyBoilerplate] Running tar command from ${BOILERPLATE} to ${dst}`);
   await run("sh", [
     "-lc",
     `tar -C ${BOILERPLATE} -cf - . \
       --exclude=.git --exclude=node_modules --exclude=.next --exclude=.turbo --exclude=dist --exclude=build \
       | tar -C ${dst} -xpf -`,
   ]);
+  
   // safety: ensure none of these exist post-copy
   for (const d of ["node_modules", ".next", ".turbo", "dist", "build"]) {
     await fs.rm(path.join(dst, d), { recursive: true, force: true });
-  }
-
-  // Debug: Check what was actually copied
-  try {
-    const copiedContents = await fs.readdir(dst);
-    console.log(`[copyBoilerplate] Copied directory contents:`, copiedContents);
-
-    // Check specifically for contracts directory in destination
-    const destContractsPath = path.join(dst, "contracts");
-    const destContractsExists = await exists(destContractsPath);
-    console.log(`[copyBoilerplate] Contracts directory exists in destination: ${destContractsExists}`);
-
-    if (destContractsExists) {
-      const destContractsContents = await fs.readdir(destContractsPath);
-      console.log(`[copyBoilerplate] Destination contracts directory contents:`, destContractsContents);
-      
-      // Check if package.json is missing and try to copy it manually
-      const packageJsonPath = path.join(destContractsPath, "package.json");
-      if (!(await exists(packageJsonPath))) {
-        console.log(`[copyBoilerplate] package.json missing in contracts directory, attempting manual copy...`);
-        const sourcePackageJson = path.join(BOILERPLATE, "contracts", "package.json");
-        if (await exists(sourcePackageJson)) {
-          await fs.copyFile(sourcePackageJson, packageJsonPath);
-          console.log(`[copyBoilerplate] Successfully copied package.json to contracts directory`);
-        } else {
-          console.log(`[copyBoilerplate] Source package.json not found either!`);
-        }
-      }
-      
-      // Check if hardhat.config.js is missing and try to copy it manually
-      const hardhatConfigPath = path.join(destContractsPath, "hardhat.config.js");
-      if (!(await exists(hardhatConfigPath))) {
-        console.log(`[copyBoilerplate] hardhat.config.js missing in contracts directory, attempting manual copy...`);
-        const sourceHardhatConfig = path.join(BOILERPLATE, "contracts", "hardhat.config.js");
-        if (await exists(sourceHardhatConfig)) {
-          await fs.copyFile(sourceHardhatConfig, hardhatConfigPath);
-          console.log(`[copyBoilerplate] Successfully copied hardhat.config.js to contracts directory`);
-        } else {
-          console.log(`[copyBoilerplate] Source hardhat.config.js not found either!`);
-        }
-      }
-      
-      // Check for Solidity files and copy them if missing
-      const solidityFiles = ["ERC20Template.sol", "ERC721Template.sol", "EscrowTemplate.sol"];
-      for (const solFile of solidityFiles) {
-        const destSolPath = path.join(destContractsPath, solFile);
-        if (!(await exists(destSolPath))) {
-          console.log(`[copyBoilerplate] ${solFile} missing in contracts directory, attempting manual copy...`);
-          const sourceSolPath = path.join(BOILERPLATE, "contracts", solFile);
-          if (await exists(sourceSolPath)) {
-            await fs.copyFile(sourceSolPath, destSolPath);
-            console.log(`[copyBoilerplate] Successfully copied ${solFile} to contracts directory`);
-          } else {
-            console.log(`[copyBoilerplate] Source ${solFile} not found either!`);
-          }
-        }
-      }
-    } else {
-      console.log(`[copyBoilerplate] Contracts directory missing entirely, attempting to create it...`);
-      await fs.mkdir(destContractsPath, { recursive: true });
-      
-      // Try to copy the entire contracts directory manually
-      const sourceContractsPath = path.join(BOILERPLATE, "contracts");
-      if (await exists(sourceContractsPath)) {
-        console.log(`[copyBoilerplate] Attempting to copy entire contracts directory manually...`);
-        await run("sh", [
-          "-lc",
-          `cp -r ${sourceContractsPath}/* ${destContractsPath}/`,
-        ]);
-        console.log(`[copyBoilerplate] Manual contracts directory copy completed`);
-      }
-    }
-  } catch (error) {
-    console.error(`[copyBoilerplate] Error checking destination directory:`, error.message);
   }
   
   console.log(`[copyBoilerplate] Boilerplate copy completed in ${Date.now() - startTime}ms`);
