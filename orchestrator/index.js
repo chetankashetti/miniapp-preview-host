@@ -82,44 +82,22 @@ async function deployToVercel(dir, projectId, logs) {
   console.log(`[${projectId}] 🌐 Deploying to Vercel...`);
   
   try {
-    // Check if Vercel CLI is available
-    let vercelInstalled = false;
-    try {
-      await run("vercel", ["--version"], { id: projectId, logs });
-      vercelInstalled = true;
-    } catch {
-      console.log(`[${projectId}] Vercel CLI not found, attempting to install...`);
-      try {
-        await run("npm", ["install", "-g", "vercel"], { id: projectId, logs });
-        // After installation, check if vercel command works
-        try {
-          await run("vercel", ["--version"], { id: projectId, logs });
-          vercelInstalled = true;
-        } catch {
-          // If global install didn't work, try npx instead
-          console.log(`[${projectId}] Global install failed, using npx...`);
-          vercelInstalled = false;
-        }
-      } catch (installError) {
-        console.log(`[${projectId}] Global install failed, will use npx instead`);
-        vercelInstalled = false;
-      }
-    }
-
     // Set up environment variables
     const env = {
       ...process.env,
       DEPLOYMENT_TOKEN_SECRET,
     };
 
-    // Deploy to Vercel (use npx if global install failed)
-    let deploymentUrl;
-    let output;
-    if (vercelInstalled) {
-      output = await run("vercel", ["--token", DEPLOYMENT_TOKEN_SECRET, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, DEPLOYMENT_TOKEN_SECRET, CI: "1" }, logs });
-    } else {
-      output = await run("npx", ["vercel", "--token", DEPLOYMENT_TOKEN_SECRET, "--name", projectId, "--prod", "--confirm", "--public"], { id: projectId, cwd: dir, env: { ...env, DEPLOYMENT_TOKEN_SECRET, CI: "1" }, logs });
-    }
+    // Always use npx for Vercel CLI to avoid installation issues
+    console.log(`[${projectId}] Using npx to run Vercel CLI...`);
+    
+    // Deploy to Vercel using npx (more reliable in containerized environments)
+    const output = await run("npx", ["vercel", "--token", DEPLOYMENT_TOKEN_SECRET, "--name", projectId, "--prod", "--confirm", "--public"], { 
+      id: projectId, 
+      cwd: dir, 
+      env: { ...env, DEPLOYMENT_TOKEN_SECRET, CI: "1" }, 
+      logs 
+    });
     
     console.log(`[${projectId}] ✅ Vercel deployment completed`);
     
@@ -127,7 +105,7 @@ async function deployToVercel(dir, projectId, logs) {
     // Look for URLs in the output (e.g., "https://project-name-xyz123.vercel.app")
     const urlMatch = output.match(/https:\/\/[^\s]+\.vercel\.app/);
     if (urlMatch) {
-      deploymentUrl = urlMatch[0];
+      const deploymentUrl = urlMatch[0];
       console.log(`[${projectId}] 🌐 Found Vercel deployment URL: ${deploymentUrl}`);
       return deploymentUrl;
     } else {
@@ -150,48 +128,17 @@ async function deployToNetlify(dir, projectId, logs) {
   console.log(`[${projectId}] 🌐 Deploying to Netlify...`);
   
   try {
-    // Check if Netlify CLI is available
-    let netlifyInstalled = false;
-    try {
-      await run("netlify", ["--version"], { id: projectId, logs });
-      netlifyInstalled = true;
-    } catch {
-      console.log(`[${projectId}] Netlify CLI not found, attempting to install...`);
-      try {
-        await run("npm", ["install", "-g", "netlify-cli"], { id: projectId, logs });
-        // After installation, check if netlify command works
-        try {
-          await run("netlify", ["--version"], { id: projectId, logs });
-          netlifyInstalled = true;
-        } catch {
-          // If global install didn't work, try npx instead
-          console.log(`[${projectId}] Global install failed, using npx...`);
-          netlifyInstalled = false;
-        }
-      } catch (installError) {
-        console.log(`[${projectId}] Global install failed, will use npx instead`);
-        netlifyInstalled = false;
-      }
-    }
-
     // Build the project first
     console.log(`[${projectId}] Building project...`);
     await run("npm", ["run", "build"], { id: projectId, cwd: dir, logs });
 
-    // Deploy to Netlify (use npx if global install failed)
-    if (netlifyInstalled) {
-      await run("netlify", ["deploy", "--prod", "--auth", NETLIFY_TOKEN, "--dir", ".next"], { 
-        id: projectId, 
-        cwd: dir, 
-        logs 
-      });
-    } else {
-      await run("npx", ["netlify", "deploy", "--prod", "--auth", NETLIFY_TOKEN, "--dir", ".next"], { 
-        id: projectId, 
-        cwd: dir, 
-        logs 
-      });
-    }
+    // Always use npx for Netlify CLI to avoid installation issues
+    console.log(`[${projectId}] Using npx to run Netlify CLI...`);
+    await run("npx", ["netlify", "deploy", "--prod", "--auth", NETLIFY_TOKEN, "--dir", ".next"], { 
+      id: projectId, 
+      cwd: dir, 
+      logs 
+    });
     
     console.log(`[${projectId}] ✅ Netlify deployment completed`);
     return `https://${projectId}.netlify.app`;
@@ -289,6 +236,14 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
     };
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
+
+    // Handle spawn errors (like ENOENT)
+    child.on("error", (error) => {
+      const msg = `${cmd} spawn error: ${error.message}`;
+      console.error(`${label} ${msg}`);
+      logs?.push(`${label} ${msg}\n`);
+      reject(new Error(msg));
+    });
 
     child.on("exit", (code) => {
       if (code === 0) resolve(output);
