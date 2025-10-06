@@ -164,14 +164,6 @@ async function deployContracts(dir, projectId, logs) {
   console.log(`[${projectId}] 🚀 Deploying contracts to Base Sepolia testnet...`);
   
   try {
-    // Check if we have nested contracts structure
-    const nestedContractsDir = path.join(contractsDir, "contracts");
-    const isNestedStructure = await exists(nestedContractsDir);
-    
-    if (isNestedStructure) {
-      console.log(`[${projectId}] Found nested contracts structure, using nested path`);
-    }
-
     // Install dependencies
     console.log(`[${projectId}] Installing contract dependencies...`);
     await run("npm", ["install"], { id: projectId, cwd: contractsDir, logs });
