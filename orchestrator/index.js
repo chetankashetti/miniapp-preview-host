@@ -407,7 +407,26 @@ async function copyBoilerplate(dst) {
   }
   
   await fs.mkdir(dst, { recursive: true });
+  
+  // Debug: List what's actually in the source boilerplate before copying
+  try {
+    const sourceContents = await fs.readdir(BOILERPLATE);
+    console.log(`[copyBoilerplate] Source boilerplate contents before copy:`, sourceContents);
+    
+    // Check contracts directory specifically
+    const sourceContractsPath = path.join(BOILERPLATE, "contracts");
+    if (await exists(sourceContractsPath)) {
+      const sourceContractsContents = await fs.readdir(sourceContractsPath);
+      console.log(`[copyBoilerplate] Source contracts directory contents:`, sourceContractsContents);
+    } else {
+      console.log(`[copyBoilerplate] No contracts directory found in source boilerplate!`);
+    }
+  } catch (error) {
+    console.error(`[copyBoilerplate] Error checking source boilerplate:`, error.message);
+  }
+  
   // copy while excluding build dirs & node_modules
+  console.log(`[copyBoilerplate] Running tar command from ${BOILERPLATE} to ${dst}`);
   await run("sh", [
     "-lc",
     `tar -C ${BOILERPLATE} -cf - . \
@@ -432,6 +451,62 @@ async function copyBoilerplate(dst) {
     if (destContractsExists) {
       const destContractsContents = await fs.readdir(destContractsPath);
       console.log(`[copyBoilerplate] Destination contracts directory contents:`, destContractsContents);
+      
+      // Check if package.json is missing and try to copy it manually
+      const packageJsonPath = path.join(destContractsPath, "package.json");
+      if (!(await exists(packageJsonPath))) {
+        console.log(`[copyBoilerplate] package.json missing in contracts directory, attempting manual copy...`);
+        const sourcePackageJson = path.join(BOILERPLATE, "contracts", "package.json");
+        if (await exists(sourcePackageJson)) {
+          await fs.copyFile(sourcePackageJson, packageJsonPath);
+          console.log(`[copyBoilerplate] Successfully copied package.json to contracts directory`);
+        } else {
+          console.log(`[copyBoilerplate] Source package.json not found either!`);
+        }
+      }
+      
+      // Check if hardhat.config.js is missing and try to copy it manually
+      const hardhatConfigPath = path.join(destContractsPath, "hardhat.config.js");
+      if (!(await exists(hardhatConfigPath))) {
+        console.log(`[copyBoilerplate] hardhat.config.js missing in contracts directory, attempting manual copy...`);
+        const sourceHardhatConfig = path.join(BOILERPLATE, "contracts", "hardhat.config.js");
+        if (await exists(sourceHardhatConfig)) {
+          await fs.copyFile(sourceHardhatConfig, hardhatConfigPath);
+          console.log(`[copyBoilerplate] Successfully copied hardhat.config.js to contracts directory`);
+        } else {
+          console.log(`[copyBoilerplate] Source hardhat.config.js not found either!`);
+        }
+      }
+      
+      // Check for Solidity files and copy them if missing
+      const solidityFiles = ["ERC20Template.sol", "ERC721Template.sol", "EscrowTemplate.sol"];
+      for (const solFile of solidityFiles) {
+        const destSolPath = path.join(destContractsPath, solFile);
+        if (!(await exists(destSolPath))) {
+          console.log(`[copyBoilerplate] ${solFile} missing in contracts directory, attempting manual copy...`);
+          const sourceSolPath = path.join(BOILERPLATE, "contracts", solFile);
+          if (await exists(sourceSolPath)) {
+            await fs.copyFile(sourceSolPath, destSolPath);
+            console.log(`[copyBoilerplate] Successfully copied ${solFile} to contracts directory`);
+          } else {
+            console.log(`[copyBoilerplate] Source ${solFile} not found either!`);
+          }
+        }
+      }
+    } else {
+      console.log(`[copyBoilerplate] Contracts directory missing entirely, attempting to create it...`);
+      await fs.mkdir(destContractsPath, { recursive: true });
+      
+      // Try to copy the entire contracts directory manually
+      const sourceContractsPath = path.join(BOILERPLATE, "contracts");
+      if (await exists(sourceContractsPath)) {
+        console.log(`[copyBoilerplate] Attempting to copy entire contracts directory manually...`);
+        await run("sh", [
+          "-lc",
+          `cp -r ${sourceContractsPath}/* ${destContractsPath}/`,
+        ]);
+        console.log(`[copyBoilerplate] Manual contracts directory copy completed`);
+      }
     }
   } catch (error) {
     console.error(`[copyBoilerplate] Error checking destination directory:`, error.message);
