@@ -180,6 +180,14 @@ async function deployContractsFromPath(contractsDir, projectId, logs) {
     console.log(`[${projectId}] Installing contract dependencies...`);
     await run("npm", ["install"], { id: projectId, cwd: contractsDir, logs });
 
+    // Clean previous compilation artifacts
+    console.log(`[${projectId}] Cleaning previous compilation artifacts...`);
+    try {
+      await run("npx", ["hardhat", "clean"], { id: projectId, cwd: contractsDir, logs });
+    } catch (error) {
+      console.log(`[${projectId}] Clean command failed (this is okay if no previous artifacts):`, error.message);
+    }
+
     // Compile contracts
     console.log(`[${projectId}] Compiling contracts...`);
     await run("npx", ["hardhat", "compile"], { id: projectId, cwd: contractsDir, logs });
