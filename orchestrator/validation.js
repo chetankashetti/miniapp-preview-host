@@ -152,13 +152,26 @@ export class RailwayCompilationValidator {
   }
 
   /**
-   * TypeScript compilation validation
+   * TypeScript compilation validation using globally available TypeScript
    */
   async validateTypeScript(projectId, tempDir, runCommand) {
     try {
       console.log(`[${projectId}] 🔍 Validating TypeScript compilation...`);
       
-      const output = await runCommand("npx", ["tsc", "--noEmit", "--skipLibCheck"], { 
+      // Use globally available TypeScript from Railway service's node_modules
+      const globalTscPath = path.join(process.cwd(), 'node_modules', '.bin', 'tsc');
+      let command = "npx";
+      let args = ["tsc", "--noEmit", "--skipLibCheck"];
+      
+      if (existsSync(globalTscPath)) {
+        command = globalTscPath;
+        args = ["--noEmit", "--skipLibCheck"];
+        console.log(`[${projectId}] 🚀 Using globally available TypeScript compiler`);
+      } else {
+        console.log(`[${projectId}] 📦 Using npx to run TypeScript compiler`);
+      }
+      
+      const output = await runCommand(command, args, { 
         id: projectId, 
         cwd: tempDir 
       });
@@ -196,13 +209,26 @@ export class RailwayCompilationValidator {
   }
 
   /**
-   * ESLint validation
+   * ESLint validation using globally available ESLint
    */
   async validateESLint(projectId, tempDir, runCommand) {
     try {
       console.log(`[${projectId}] 🔍 Validating ESLint...`);
       
-      const output = await runCommand("npx", ["eslint", "src", "--format", "json", "--max-warnings", "0"], { 
+      // Use globally available ESLint from Railway service's node_modules
+      const globalEslintPath = path.join(process.cwd(), 'node_modules', '.bin', 'eslint');
+      let command = "npx";
+      let args = ["eslint", "src", "--format", "json", "--max-warnings", "0"];
+      
+      if (existsSync(globalEslintPath)) {
+        command = globalEslintPath;
+        args = ["src", "--format", "json", "--max-warnings", "0"];
+        console.log(`[${projectId}] 🚀 Using globally available ESLint`);
+      } else {
+        console.log(`[${projectId}] 📦 Using npx to run ESLint`);
+      }
+      
+      const output = await runCommand(command, args, { 
         id: projectId, 
         cwd: tempDir 
       });
@@ -215,13 +241,26 @@ export class RailwayCompilationValidator {
   }
 
   /**
-   * Next.js build validation
+   * Next.js build validation using globally available Next.js
    */
   async validateBuild(projectId, tempDir, runCommand) {
     try {
       console.log(`[${projectId}] 🔍 Validating Next.js build...`);
       
-      const output = await runCommand("npx", ["next", "build", "--no-lint"], { 
+      // Use globally available Next.js from Railway service's node_modules
+      const globalNextPath = path.join(process.cwd(), 'node_modules', '.bin', 'next');
+      let command = "npx";
+      let args = ["next", "build", "--no-lint"];
+      
+      if (existsSync(globalNextPath)) {
+        command = globalNextPath;
+        args = ["build", "--no-lint"];
+        console.log(`[${projectId}] 🚀 Using globally available Next.js`);
+      } else {
+        console.log(`[${projectId}] 📦 Using npx to run Next.js`);
+      }
+      
+      const output = await runCommand(command, args, { 
         id: projectId, 
         cwd: tempDir 
       });
