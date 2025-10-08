@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import httpProxy from "http-proxy"; // CJS default import
+import { RailwayCompilationValidator } from "./validation.js";
 
 
 /* ========= Config ========= */
@@ -451,6 +452,68 @@ const server = http.createServer(app);
 
 app.use(bodyParser.json({ limit: "50mb" }));
 
+// Validation endpoint for compilation validation
+app.post("/validate", requireAuth, async (req, res) => {
+  const validationStartTime = Date.now();
+  const projectId = req.body.projectId || req.body.hash;
+  const files = req.body.files;
+  const validationConfig = req.body.validationConfig || {
+    enableTypeScript: true,
+    enableSolidity: true,
+    enableESLint: true,
+    enableBuild: true,
+    enableRuntimeChecks: true
+  };
+  
+  if (!projectId) return res.status(400).json({ error: "projectId required" });
+  if (!files) return res.status(400).json({ error: "files required" });
+
+  console.log(`[${projectId}] Starting compilation validation... (Environment: ${IS_RAILWAY ? 'Railway' : 'Local'})`);
+  console.log(`[${projectId}] Validation config:`, validationConfig);
+  
+  try {
+    // Convert files object to array format
+    const filesArray = Object.entries(files || {}).map(([path, content]) => ({
+      path,
+      content
+    }));
+
+    console.log(`[${projectId}] Processing ${filesArray.length} files for validation`);
+
+    // Run full compilation validation using Railway validator
+    const validator = new RailwayCompilationValidator(process.cwd(), BOILERPLATE, PREVIEWS_ROOT);
+    const validationResult = await validator.validateProject(projectId, filesArray, validationConfig, run);
+    
+    console.log(`[${projectId}] Validation completed in ${Date.now() - validationStartTime}ms`);
+    console.log(`[${projectId}] Success: ${validationResult.success}, Errors: ${validationResult.errors.length}, Warnings: ${validationResult.warnings.length}`);
+    
+    return res.json(validationResult);
+    
+  } catch (e) {
+    console.error(`[${projectId}] Validation failed after ${Date.now() - validationStartTime}ms:`, e);
+    return res.status(500).json({ 
+      success: false,
+      error: String(e.message || e),
+      errors: [],
+      warnings: [{
+        file: 'validation',
+        line: 1,
+        message: `Validation failed: ${e.message}`,
+        severity: 'error',
+        category: 'validation',
+        suggestion: 'Check Railway logs for details'
+      }],
+      compilationTime: Date.now() - validationStartTime,
+      validationSummary: {
+        totalFiles: 0,
+        filesWithErrors: 0,
+        filesWithWarnings: 0,
+        criticalErrors: 1
+      }
+    });
+  }
+});
+
 // Deploy endpoint with external deployment feature flags
 app.post("/deploy", requireAuth, async (req, res) => {
   const deployStartTime = Date.now();
@@ -889,7 +952,16 @@ app.get("/health", (req, res) => {
       vercelDeployment: ENABLE_VERCEL_DEPLOYMENT,
       netlifyDeployment: ENABLE_NETLIFY_DEPLOYMENT,
       contractDeployment: ENABLE_CONTRACT_DEPLOYMENT,
-      forceExternalDeployment: FORCE_EXTERNAL_DEPLOYMENT
+      forceExternalDeployment: FORCE_EXTERNAL_DEPLOYMENT,
+      compilationValidation: true
+    },
+    validation: {
+      available: true,
+      typescript: true,
+      solidity: true,
+      eslint: true,
+      build: true,
+      runtimeChecks: true
     }
   });
 });
