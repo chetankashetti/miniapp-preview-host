@@ -26,10 +26,10 @@ class TypeScriptCompilerService {
       resolveJsonModule: true,
       isolatedModules: true,
       incremental: true,
+      baseUrl: ".", // ✅ Ensure baseUrl is set for path mapping
       plugins: [
         { name: "next" }
       ],
-      baseUrl: ".",
       paths: {
         "@/*": ["./src/*"],
         "@/components/*": ["./src/components/*"],
@@ -60,7 +60,12 @@ class TypeScriptCompilerService {
           );
           compilerOptions = {
             ...this.compilerOptions,
-            ...configFile.options
+            ...configFile.options,
+            baseUrl: configFile.options.baseUrl || ".", // ✅ Ensure baseUrl is always set
+            paths: {
+              ...this.compilerOptions.paths,
+              ...configFile.options.paths
+            }
           };
         } catch (error) {
           console.warn(`[${projectId}] ⚠️ Failed to parse tsconfig.json, using defaults:`, error.message);
