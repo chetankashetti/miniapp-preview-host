@@ -248,7 +248,17 @@ export class RailwayCompilationValidator {
       
       // 3. Wait for all validations to complete with timeout
       console.log(`[${projectId}] 🔍 Running ${validationPromises.length} validation checks...`);
-      const results = await Promise.all(validationPromises);
+      
+      // Add timeout to prevent hanging validations (5 minutes max)
+      const VALIDATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Validation timeout after ${VALIDATION_TIMEOUT_MS}ms`)), VALIDATION_TIMEOUT_MS);
+      });
+      
+      const results = await Promise.race([
+        Promise.all(validationPromises),
+        timeoutPromise
+      ]);
       
       // 4. Combine results
       const allErrors = [];
@@ -405,19 +415,22 @@ export class RailwayCompilationValidator {
    * TypeScript compilation validation using TypeScript Compiler API
    */
   async validateTypeScript(projectId, tempDir, runCommand) {
+    const startTime = Date.now();
     try {
-      console.log(`[${projectId}] 🔍 Validating TypeScript using Compiler API...`);
+      console.log(`[${projectId}] 🔍 TypeScript validation started...`);
       
       // Use TypeScript Compiler API for structured diagnostics
       const result = await this.tsCompiler.validateTypeScriptFiles(projectId, tempDir);
       
-      console.log(`[${projectId}] 📊 TypeScript validation completed:`);
+      const duration = Date.now() - startTime;
+      console.log(`[${projectId}] ✅ TypeScript validation completed in ${duration}ms:`);
       console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
       console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
       
       return result;
     } catch (error) {
-      console.error(`[${projectId}] ❌ TypeScript validation failed:`, error.message);
+      const duration = Date.now() - startTime;
+      console.error(`[${projectId}] ❌ TypeScript validation failed after ${duration}ms:`, error.message);
       return {
         errors: [{
           file: 'typescript-validation',
@@ -437,13 +450,14 @@ export class RailwayCompilationValidator {
    * Solidity compilation validation
    */
   async validateSolidity(projectId, tempDir, runCommand) {
+    const startTime = Date.now();
     const contractsDir = path.join(tempDir, 'contracts');
     if (!existsSync(contractsDir)) {
       console.log(`[${projectId}] 📁 No contracts directory found, skipping Solidity validation`);
       return { errors: [], warnings: [] };
     }
 
-    console.log(`[${projectId}] 🔍 Validating Solidity compilation...`);
+    console.log(`[${projectId}] 🔍 Solidity validation started...`);
 
     try {
       const { stdout, stderr } = await runCommand(
@@ -453,14 +467,28 @@ export class RailwayCompilationValidator {
       );
 
       const output = `${stdout}\n${stderr}`;
-      return this.parseSolidityErrors(output);
+      const result = this.parseSolidityErrors(output);
+      
+      const duration = Date.now() - startTime;
+      console.log(`[${projectId}] ✅ Solidity validation completed in ${duration}ms:`);
+      console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
+      console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
+      
+      return result;
 
     } catch (error) {
-      console.log(`[${projectId}] ⚠️ Solidity validation failed`);
+      const duration = Date.now() - startTime;
+      console.log(`[${projectId}] ⚠️ Solidity validation failed after ${duration}ms`);
       // Use error.output which contains both stdout and stderr, fallback to individual streams
       const output = error.output || `${error.stdout || ''}\n${error.stderr || ''}` || error.message || String(error);
       console.log(`[${projectId}] 🔍 Debug - Error output:`, JSON.stringify(output));
-      return this.parseSolidityErrors(output);
+      
+      const result = this.parseSolidityErrors(output);
+      console.log(`[${projectId}] ✅ Solidity validation completed in ${duration}ms:`);
+      console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
+      console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
+      
+      return result;
     }
   }
 
@@ -468,8 +496,9 @@ export class RailwayCompilationValidator {
    * ESLint validation using globally available ESLint
    */
   async validateESLint(projectId, tempDir, runCommand) {
+    const startTime = Date.now();
     try {
-      console.log(`[${projectId}] 🔍 Validating ESLint...`);
+      console.log(`[${projectId}] 🔍 ESLint validation started...`);
       
       // Use globally available ESLint from Railway service's node_modules
       const globalEslintPath = path.join(process.cwd(), 'node_modules', '.bin', 'eslint');
@@ -489,10 +518,19 @@ export class RailwayCompilationValidator {
         cwd: tempDir 
       });
       
+      const duration = Date.now() - startTime;
+      console.log(`[${projectId}] ✅ ESLint validation completed in ${duration}ms:`);
+      console.log(`[${projectId}]   ❌ Errors: 0`);
+      console.log(`[${projectId}]   ⚠️  Warnings: 0`);
       return { errors: [], warnings: [] };
     } catch (error) {
-      console.log(`[${projectId}] ⚠️ ESLint validation found errors`);
-      return this.parseESLintErrors(error.message || error.toString());
+      const duration = Date.now() - startTime;
+      console.log(`[${projectId}] ⚠️ ESLint validation found errors after ${duration}ms`);
+      const result = this.parseESLintErrors(error.message || error.toString());
+      console.log(`[${projectId}] ✅ ESLint validation completed in ${duration}ms:`);
+      console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
+      console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
+      return result;
     }
   }
 
@@ -500,8 +538,9 @@ export class RailwayCompilationValidator {
    * Next.js build validation using globally available Next.js
    */
   async validateBuild(projectId, tempDir, runCommand) {
+    const startTime = Date.now();
     try {
-      console.log(`[${projectId}] 🔍 Validating Next.js build...`);
+      console.log(`[${projectId}] 🔍 Next.js build validation started...`);
       
       // Use globally available Next.js from Railway service's node_modules
       const globalNextPath = path.join(process.cwd(), 'node_modules', '.bin', 'next');
@@ -521,10 +560,19 @@ export class RailwayCompilationValidator {
         cwd: tempDir 
       });
       
+      const duration = Date.now() - startTime;
+      console.log(`[${projectId}] ✅ Next.js build validation completed in ${duration}ms:`);
+      console.log(`[${projectId}]   ❌ Errors: 0`);
+      console.log(`[${projectId}]   ⚠️  Warnings: 0`);
       return { errors: [], warnings: [] };
     } catch (error) {
-      console.log(`[${projectId}] ⚠️ Build validation found errors`);
-      return this.parseBuildErrors(error.message || error.toString());
+      const duration = Date.now() - startTime;
+      console.log(`[${projectId}] ⚠️ Next.js build validation found errors after ${duration}ms`);
+      const result = this.parseBuildErrors(error.message || error.toString());
+      console.log(`[${projectId}] ✅ Next.js build validation completed in ${duration}ms:`);
+      console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
+      console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
+      return result;
     }
   }
 
@@ -532,7 +580,8 @@ export class RailwayCompilationValidator {
    * Runtime checks validation
    */
   async validateRuntimeChecks(projectId, filesArray) {
-    console.log(`[${projectId}] 🔍 Running runtime checks...`);
+    const startTime = Date.now();
+    console.log(`[${projectId}] 🔍 Runtime checks validation started...`);
     
     const errors = [];
     const warnings = [];
@@ -547,6 +596,12 @@ export class RailwayCompilationValidator {
         info.push(...runtimeIssues.info);
       }
     }
+    
+    const duration = Date.now() - startTime;
+    console.log(`[${projectId}] ✅ Runtime checks validation completed in ${duration}ms:`);
+    console.log(`[${projectId}]   ❌ Errors: ${errors.length}`);
+    console.log(`[${projectId}]   ⚠️  Warnings: ${warnings.length}`);
+    console.log(`[${projectId}]   ℹ️  Info: ${info.length}`);
     
     return { errors, warnings, info };
   }
