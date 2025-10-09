@@ -14,7 +14,6 @@ import { RailwayCompilationValidator } from "./validation.js";
 
 
 /* ========= Config ========= */
-
 const PORT = process.env.PORT || 8080;
 
 // Environment detection
