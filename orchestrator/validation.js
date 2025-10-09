@@ -205,10 +205,11 @@ class TypeScriptCompilerService {
  * Provides full compilation validation using Railway's complete environment
  */
 export class RailwayCompilationValidator {
-  constructor(projectRoot, boilerplateDir, previewsRoot) {
+  constructor(projectRoot, boilerplateDir, previewsRoot, npmInstallFn) {
     this.projectRoot = projectRoot;
     this.boilerplateDir = boilerplateDir;
     this.previewsRoot = previewsRoot;
+    this.npmInstall = npmInstallFn;
     this.tsCompiler = new TypeScriptCompilerService();
   }
 
@@ -402,12 +403,15 @@ export class RailwayCompilationValidator {
       await fs.writeFile(filePath, file.content, 'utf8');
     }
     
-    // Install dependencies for validation
+    // Install dependencies for validation using robust npmInstall function
     console.log(`Installing dependencies for validation...`);
     try {
-      const result = await runCommand("npm", ["install"], { 
+      // Use the same robust npmInstall function as deploy endpoint
+      const logs = [];
+      await this.npmInstall(tempDir, { 
         id: "validation", 
-        cwd: tempDir 
+        storeDir: path.join(process.cwd(), '.npm-store'),
+        logs 
       });
       console.log(`Dependencies installed successfully`);
     } catch (error) {
@@ -472,6 +476,21 @@ export class RailwayCompilationValidator {
     console.log(`[${projectId}] 🔍 Solidity validation started...`);
 
     try {
+      // Install dependencies in contracts directory first (same as index.js)
+      const packageJsonPath = path.join(contractsDir, 'package.json');
+      if (existsSync(packageJsonPath)) {
+        console.log(`[${projectId}] Installing contract dependencies...`);
+        try {
+          await runCommand("npm", ["install"], { id: projectId, cwd: contractsDir });
+          console.log(`[${projectId}] Contract dependencies installed successfully`);
+        } catch (installError) {
+          console.warn(`[${projectId}] Failed to install contract dependencies:`, installError.message);
+          // Continue with validation even if npm install fails
+        }
+      } else {
+        console.log(`[${projectId}] No package.json found in contracts directory, skipping dependency installation`);
+      }
+
       const { stdout, stderr } = await runCommand(
         "npx",
         ["hardhat", "compile", "--force"],

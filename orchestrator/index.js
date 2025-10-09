@@ -500,7 +500,7 @@ app.post("/validate", requireAuth, async (req, res) => {
     console.log(`[${projectId}] Processing ${filesArray.length} files for validation`);
 
     // Run full compilation validation using Railway validator
-    const validator = new RailwayCompilationValidator(process.cwd(), BOILERPLATE, PREVIEWS_ROOT);
+    const validator = new RailwayCompilationValidator(process.cwd(), BOILERPLATE, PREVIEWS_ROOT, npmInstall);
     const validationResult = await validator.validateProject(projectId, filesArray, validationConfig, run);
     
     console.log(`[${projectId}] Validation completed in ${Date.now() - validationStartTime}ms`);
