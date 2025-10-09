@@ -246,7 +246,7 @@ export class RailwayCompilationValidator {
         validationPromises.push(this.validateRuntimeChecks(projectId, filesArray));
       }
       
-      // 3. Wait for all validations to complete
+      // 3. Wait for all validations to complete with timeout
       console.log(`[${projectId}] 🔍 Running ${validationPromises.length} validation checks...`);
       const results = await Promise.all(validationPromises);
       
@@ -281,6 +281,50 @@ export class RailwayCompilationValidator {
         files: filesArray.map(f => ({ filename: f.path, content: f.content })),
         compilationTime,
         validationSummary
+      };
+      
+    } catch (error) {
+      const compilationTime = Date.now() - startTime;
+      console.error(`[${projectId}] ❌ Validation failed after ${compilationTime}ms:`, error.message);
+      
+      // Handle timeout specifically
+      if (error.message.includes('timeout')) {
+        return {
+          success: false,
+          errors: [{
+            file: 'validation-timeout',
+            line: 1,
+            column: 1,
+            message: `Validation timed out after ${VALIDATION_TIMEOUT_MS}ms. This may indicate slow compilation or hanging processes.`,
+            severity: 'error',
+            category: 'validation-timeout',
+            source: 'validation-system'
+          }],
+          warnings: [],
+          info: [],
+          files: filesArray.map(f => ({ filename: f.path, content: f.content })),
+          compilationTime,
+          validationSummary: 'Validation timed out'
+        };
+      }
+      
+      // Handle other validation errors
+      return {
+        success: false,
+        errors: [{
+          file: 'validation-error',
+          line: 1,
+          column: 1,
+          message: `Validation failed: ${error.message}`,
+          severity: 'error',
+          category: 'validation-error',
+          source: 'validation-system'
+        }],
+        warnings: [],
+        info: [],
+        files: filesArray.map(f => ({ filename: f.path, content: f.content })),
+        compilationTime,
+        validationSummary: 'Validation failed'
       };
       
     } finally {
