@@ -538,11 +538,32 @@ export class RailwayCompilationValidator {
     } catch (error) {
       const duration = Date.now() - startTime;
       console.log(`[${projectId}] ⚠️ ESLint validation found errors after ${duration}ms`);
-      const result = this.parseESLintErrors(error.message || error.toString());
-      console.log(`[${projectId}] ✅ ESLint validation completed in ${duration}ms:`);
-      console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
-      console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
-      return result;
+      
+      // Use the same approach as local validation - check for command failure
+      if (error.code === 1 || error.code === 2) {
+        // Command failed - parse the actual output
+        const output = error.output || `${error.stdout || ''}\n${error.stderr || ''}` || error.message || String(error);
+        const result = this.parseESLintErrors(output);
+        console.log(`[${projectId}] ✅ ESLint validation completed in ${duration}ms:`);
+        console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
+        console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
+        return result;
+      } else {
+        // Unexpected error
+        console.error(`[${projectId}] ❌ ESLint validation failed after ${duration}ms:`, error.message);
+        return {
+          errors: [{
+            file: 'eslint-validation',
+            line: 1,
+            column: 1,
+            message: `ESLint validation failed: ${error.message}`,
+            severity: 'error',
+            category: 'eslint',
+            source: 'railway'
+          }],
+          warnings: []
+        };
+      }
     }
   }
 
@@ -742,39 +763,76 @@ export class RailwayCompilationValidator {
    */
   parseESLintErrors(errorOutput) {
     const errors = [];
+    const warnings = [];
     
     try {
       const eslintResults = JSON.parse(errorOutput);
       for (const result of eslintResults) {
         for (const message of result.messages) {
-          errors.push({
+          const error = {
             file: result.filePath,
             line: message.line,
             column: message.column,
             message: message.message,
             severity: message.severity === 2 ? 'error' : 'warning',
             category: 'eslint',
-            rule: message.ruleId
-          });
+            rule: message.ruleId,
+            source: 'eslint'
+          };
+          
+          if (message.severity === 2) {
+            errors.push(error);
+          } else {
+            warnings.push(error);
+          }
         }
       }
     } catch (parseError) {
-      // Fallback to simple parsing
+      // Enhanced fallback parsing for ESLint configuration errors and other issues
       const lines = errorOutput.split('\n');
       for (const line of lines) {
-        if (line.includes('error') || line.includes('warning')) {
-          errors.push({
-            file: 'eslint',
+        const trimmedLine = line.trim();
+        if (!trimmedLine) continue;
+        
+        // ESLint configuration errors and other issues
+        if (trimmedLine.includes('Cannot read config file') || 
+            trimmedLine.includes('Failed to patch ESLint') ||
+            trimmedLine.includes('Error:') ||
+            trimmedLine.includes('error') ||
+            trimmedLine.includes('warning')) {
+          const error = {
+            file: 'eslint-config',
             line: 1,
-            message: line.trim(),
-            severity: line.includes('error') ? 'error' : 'warning',
-            category: 'eslint'
-          });
+            column: 1,
+            message: trimmedLine,
+            severity: trimmedLine.includes('error') || trimmedLine.includes('Error:') ? 'error' : 'warning',
+            category: 'eslint',
+            source: 'eslint'
+          };
+          
+          if (error.severity === 'error') {
+            errors.push(error);
+          } else {
+            warnings.push(error);
+          }
         }
+      }
+      
+      // If no errors found but ESLint exited with error, add a generic error
+      if (errors.length === 0 && errorOutput.includes('eslint')) {
+        errors.push({
+          file: 'eslint',
+          line: 1,
+          column: 1,
+          message: `ESLint validation failed: ${errorOutput.trim()}`,
+          severity: 'error',
+          category: 'eslint',
+          source: 'eslint'
+        });
       }
     }
     
-    return { errors, warnings: [] };
+    return { errors, warnings };
   }
 
   /**
