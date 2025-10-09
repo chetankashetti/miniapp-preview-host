@@ -457,13 +457,20 @@ export class RailwayCompilationValidator {
       return { errors: [], warnings: [] };
     }
 
+    // Check if contract deployment is enabled
+    const enableContractDeployment = process.env.ENABLE_CONTRACT_DEPLOYMENT === "true";
+    if (!enableContractDeployment) {
+      console.log(`[${projectId}] 🔧 Contract deployment disabled, skipping Solidity validation`);
+      return { errors: [], warnings: [] };
+    }
+
     console.log(`[${projectId}] 🔍 Solidity validation started...`);
 
     try {
       const { stdout, stderr } = await runCommand(
         "npx",
         ["hardhat", "compile", "--force"],
-        { id: projectId, cwd: tempDir }
+        { id: projectId, cwd: contractsDir } // Run from contracts directory
       );
 
       const output = `${stdout}\n${stderr}`;
