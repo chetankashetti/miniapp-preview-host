@@ -3,6 +3,197 @@
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import * as ts from "typescript";
+
+/**
+ * TypeScript Compiler Service
+ * Uses TypeScript Compiler API for structured diagnostics and validation
+ */
+class TypeScriptCompilerService {
+  constructor() {
+    this.compilerOptions = {
+      target: ts.ScriptTarget.ES2020,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      allowSyntheticDefaultImports: true,
+      esModuleInterop: true,
+      allowJs: true,
+      skipLibCheck: true,
+      strict: true,
+      forceConsistentCasingInFileNames: true,
+      noEmit: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      resolveJsonModule: true,
+      isolatedModules: true,
+      incremental: true,
+      plugins: [
+        { name: "next" }
+      ],
+      baseUrl: ".",
+      paths: {
+        "@/*": ["./src/*"],
+        "@/components/*": ["./src/components/*"],
+        "@/lib/*": ["./src/lib/*"],
+        "@/app/*": ["./src/app/*"]
+      }
+    };
+  }
+
+  /**
+   * Validate TypeScript files using Compiler API
+   */
+  async validateTypeScriptFiles(projectId, tempDir) {
+    try {
+      console.log(`[${projectId}] 🔍 Validating TypeScript using Compiler API...`);
+      
+      // Load tsconfig.json if it exists
+      const tsconfigPath = path.join(tempDir, 'tsconfig.json');
+      let compilerOptions = { ...this.compilerOptions };
+      
+      if (existsSync(tsconfigPath)) {
+        try {
+          const tsconfigContent = await fs.readFile(tsconfigPath, 'utf8');
+          const configFile = ts.parseJsonConfigFileContent(
+            JSON.parse(tsconfigContent),
+            ts.sys,
+            path.dirname(tsconfigPath)
+          );
+          compilerOptions = {
+            ...this.compilerOptions,
+            ...configFile.options
+          };
+        } catch (error) {
+          console.warn(`[${projectId}] ⚠️ Failed to parse tsconfig.json, using defaults:`, error.message);
+        }
+      }
+
+      // Create program with all TypeScript files
+      const files = await this.findTypeScriptFiles(tempDir);
+      const program = ts.createProgram(files, compilerOptions);
+      
+      // Get diagnostics
+      const diagnostics = [
+        ...program.getSemanticDiagnostics(),
+        ...program.getSyntacticDiagnostics(),
+        ...program.getDeclarationDiagnostics(),
+        ...program.getConfigFileParsingDiagnostics()
+      ];
+
+      // Convert diagnostics to structured format
+      const errors = [];
+      const warnings = [];
+      
+      for (const diagnostic of diagnostics) {
+        const result = this.formatDiagnostic(diagnostic, tempDir);
+        if (result) {
+          if (diagnostic.category === ts.DiagnosticCategory.Error) {
+            errors.push(result);
+          } else if (diagnostic.category === ts.DiagnosticCategory.Warning) {
+            warnings.push(result);
+          }
+        }
+      }
+
+      return { errors, warnings };
+      
+    } catch (error) {
+      console.error(`[${projectId}] ❌ TypeScript Compiler API error:`, error.message);
+      return {
+        errors: [{
+          file: 'typescript-compiler',
+          line: 1,
+          column: 1,
+          message: `TypeScript Compiler API error: ${error.message}`,
+          severity: 'error',
+          category: 'typescript-compiler'
+        }],
+        warnings: []
+      };
+    }
+  }
+
+  /**
+   * Find all TypeScript files in the project
+   */
+  async findTypeScriptFiles(rootDir) {
+    const files = [];
+    const extensions = ['.ts', '.tsx', '.js', '.jsx'];
+    
+    const scanDir = async (dir) => {
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          
+          if (entry.isDirectory()) {
+            // Skip node_modules and other common directories
+            if (!['node_modules', '.next', 'dist', 'build'].includes(entry.name)) {
+              await scanDir(fullPath);
+            }
+          } else if (entry.isFile()) {
+            const ext = path.extname(entry.name);
+            if (extensions.includes(ext)) {
+              files.push(fullPath);
+            }
+          }
+        }
+      } catch (error) {
+        // Skip directories that can't be read
+        console.warn(`Skipping directory ${dir}:`, error.message);
+      }
+    };
+    
+    await scanDir(rootDir);
+    return files;
+  }
+
+  /**
+   * Format TypeScript diagnostic to structured format
+   */
+  formatDiagnostic(diagnostic, projectRoot) {
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+    
+    if (diagnostic.file) {
+      const filePath = diagnostic.file.fileName;
+      const relativePath = path.relative(projectRoot, filePath);
+      
+      const start = diagnostic.start;
+      let line = 1;
+      let column = 1;
+      
+      if (start !== undefined) {
+        const sourceFile = diagnostic.file;
+        const pos = sourceFile.getLineAndCharacterOfPosition(start);
+        line = pos.line + 1;
+        column = pos.character + 1;
+      }
+      
+      return {
+        file: relativePath,
+        line: line,
+        column: column,
+        message: message,
+        severity: diagnostic.category === ts.DiagnosticCategory.Error ? 'error' : 'warning',
+        category: 'typescript',
+        code: diagnostic.code,
+        source: 'typescript-compiler-api'
+      };
+    } else {
+      // Global diagnostic (e.g., config file issues)
+      return {
+        file: 'tsconfig.json',
+        line: 1,
+        column: 1,
+        message: message,
+        severity: diagnostic.category === ts.DiagnosticCategory.Error ? 'error' : 'warning',
+        category: 'typescript-config',
+        code: diagnostic.code,
+        source: 'typescript-compiler-api'
+      };
+    }
+  }
+}
 
 /**
  * Railway Compilation Validator
@@ -13,6 +204,7 @@ export class RailwayCompilationValidator {
     this.projectRoot = projectRoot;
     this.boilerplateDir = boilerplateDir;
     this.previewsRoot = previewsRoot;
+    this.tsCompiler = new TypeScriptCompilerService();
   }
 
   /**
@@ -27,7 +219,7 @@ export class RailwayCompilationValidator {
     
     try {
       // 1. Create temp project structure
-      await this.createTempProjectForValidation(tempDir, filesArray);
+      await this.createTempProjectForValidation(tempDir, filesArray, runCommand);
       console.log(`[${projectId}] 📁 Created temporary project structure`);
       
       // 2. Run validations in parallel
@@ -45,6 +237,7 @@ export class RailwayCompilationValidator {
         validationPromises.push(this.validateESLint(projectId, tempDir, runCommand));
       }
       
+      // Skip build validation since TypeScript validation now uses Next.js build
       if (validationConfig.enableBuild) {
         validationPromises.push(this.validateBuild(projectId, tempDir, runCommand));
       }
@@ -104,7 +297,7 @@ export class RailwayCompilationValidator {
   /**
    * Create temporary project structure for validation
    */
-  async createTempProjectForValidation(tempDir, filesArray) {
+  async createTempProjectForValidation(tempDir, filesArray, runCommand) {
     // Create temp directory
     await fs.mkdir(tempDir, { recursive: true });
     
@@ -149,37 +342,50 @@ export class RailwayCompilationValidator {
       
       await fs.writeFile(filePath, file.content, 'utf8');
     }
+    
+    // Install dependencies for validation
+    console.log(`Installing dependencies for validation...`);
+    try {
+      const result = await runCommand("npm", ["install"], { 
+        id: "validation", 
+        cwd: tempDir 
+      });
+      console.log(`Dependencies installed successfully`);
+    } catch (error) {
+      console.warn(`Failed to install dependencies:`, error.message);
+      // Continue with validation even if npm install fails
+    }
   }
 
   /**
-   * TypeScript compilation validation using globally available TypeScript
+   * TypeScript compilation validation using TypeScript Compiler API
    */
   async validateTypeScript(projectId, tempDir, runCommand) {
     try {
-      console.log(`[${projectId}] 🔍 Validating TypeScript compilation...`);
+      console.log(`[${projectId}] 🔍 Validating TypeScript using Compiler API...`);
       
-      // Use globally available TypeScript from Railway service's node_modules
-      const globalTscPath = path.join(process.cwd(), 'node_modules', '.bin', 'tsc');
-      let command = "npx";
-      let args = ["tsc", "--noEmit", "--skipLibCheck"];
+      // Use TypeScript Compiler API for structured diagnostics
+      const result = await this.tsCompiler.validateTypeScriptFiles(projectId, tempDir);
       
-      if (existsSync(globalTscPath)) {
-        command = globalTscPath;
-        args = ["--noEmit", "--skipLibCheck"];
-        console.log(`[${projectId}] 🚀 Using globally available TypeScript compiler`);
-      } else {
-        console.log(`[${projectId}] 📦 Using npx to run TypeScript compiler`);
-      }
+      console.log(`[${projectId}] 📊 TypeScript validation completed:`);
+      console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
+      console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
       
-      const output = await runCommand(command, args, { 
-        id: projectId, 
-        cwd: tempDir 
-      });
-      
-      return { errors: [], warnings: [] };
+      return result;
     } catch (error) {
-      console.log(`[${projectId}] ⚠️ TypeScript validation found errors`);
-      return this.parseTypeScriptErrors(error.message || error.toString());
+      console.error(`[${projectId}] ❌ TypeScript validation failed:`, error.message);
+      return {
+        errors: [{
+          file: 'typescript-validation',
+          line: 1,
+          column: 1,
+          message: `TypeScript validation error: ${error.message}`,
+          severity: 'error',
+          category: 'typescript-validation',
+          source: 'typescript-compiler-api'
+        }],
+        warnings: []
+      };
     }
   }
 
@@ -187,24 +393,30 @@ export class RailwayCompilationValidator {
    * Solidity compilation validation
    */
   async validateSolidity(projectId, tempDir, runCommand) {
-    try {
-      const contractsDir = path.join(tempDir, 'contracts');
-      if (!existsSync(contractsDir)) {
-        console.log(`[${projectId}] 📁 No contracts directory found, skipping Solidity validation`);
-        return { errors: [], warnings: [] };
-      }
-      
-      console.log(`[${projectId}] 🔍 Validating Solidity compilation...`);
-      
-      const output = await runCommand("npx", ["hardhat", "compile", "--force"], { 
-        id: projectId, 
-        cwd: tempDir 
-      });
-      
+    const contractsDir = path.join(tempDir, 'contracts');
+    if (!existsSync(contractsDir)) {
+      console.log(`[${projectId}] 📁 No contracts directory found, skipping Solidity validation`);
       return { errors: [], warnings: [] };
+    }
+
+    console.log(`[${projectId}] 🔍 Validating Solidity compilation...`);
+
+    try {
+      const { stdout, stderr } = await runCommand(
+        "npx",
+        ["hardhat", "compile", "--force"],
+        { id: projectId, cwd: tempDir }
+      );
+
+      const output = `${stdout}\n${stderr}`;
+      return this.parseSolidityErrors(output);
+
     } catch (error) {
-      console.log(`[${projectId}] ⚠️ Solidity validation found errors`);
-      return this.parseSolidityErrors(error.message || error.toString());
+      console.log(`[${projectId}] ⚠️ Solidity validation failed`);
+      // Use error.output which contains both stdout and stderr, fallback to individual streams
+      const output = error.output || `${error.stdout || ''}\n${error.stderr || ''}` || error.message || String(error);
+      console.log(`[${projectId}] 🔍 Debug - Error output:`, JSON.stringify(output));
+      return this.parseSolidityErrors(output);
     }
   }
 
@@ -228,7 +440,7 @@ export class RailwayCompilationValidator {
         console.log(`[${projectId}] 📦 Using npx to run ESLint`);
       }
       
-      const output = await runCommand(command, args, { 
+      const result = await runCommand(command, args, { 
         id: projectId, 
         cwd: tempDir 
       });
@@ -260,7 +472,7 @@ export class RailwayCompilationValidator {
         console.log(`[${projectId}] 📦 Using npx to run Next.js`);
       }
       
-      const output = await runCommand(command, args, { 
+      const result = await runCommand(command, args, { 
         id: projectId, 
         cwd: tempDir 
       });
@@ -333,52 +545,85 @@ export class RailwayCompilationValidator {
     return { errors, warnings, info };
   }
 
-  /**
-   * Parse TypeScript compilation errors
-   */
-  parseTypeScriptErrors(errorOutput) {
-    const errors = [];
-    const lines = errorOutput.split('\n');
-    
-    for (const line of lines) {
-      if (line.includes('error TS')) {
-        const match = line.match(/(.+?)\((\d+),(\d+)\): error TS\d+: (.+)/);
-        if (match) {
-          errors.push({
-            file: match[1].trim(),
-            line: parseInt(match[2]),
-            column: parseInt(match[3]),
-            message: match[4].trim(),
-            severity: 'error',
-            category: 'typescript'
-          });
-        }
-      }
-    }
-    
-    return { errors, warnings: [] };
-  }
 
   /**
-   * Parse Solidity compilation errors
+   * Parse Solidity (Hardhat) compiler output
    */
   parseSolidityErrors(errorOutput) {
-    const errors = [];
-    const lines = errorOutput.split('\n');
+    console.log(`🔍 Debug - Parsing Solidity output:`, JSON.stringify(errorOutput));
     
-    for (const line of lines) {
-      if (line.includes('Error:')) {
-        errors.push({
-          file: 'solidity',
-          line: 1,
-          message: line.replace('Error:', '').trim(),
-          severity: 'error',
-          category: 'solidity'
-        });
-      }
+    const errors = [];
+    const warnings = [];
+    
+    if (!errorOutput || errorOutput.trim() === '') {
+      console.log(`🔍 Debug - Empty output received`);
+      return { errors, warnings };
     }
     
-    return { errors, warnings: [] };
+    // Enhanced regex for modern Solidity error format: "ErrorType: message\n  --> file:line:col:"
+    const modernRegex = /(TypeError|ParserError|SyntaxError|DeclarationError|CompileError|InternalCompilerError|Warning|Info):\s*(.+?)\s*\n\s*-->\s*(.+?):(\d+):(\d+):/gs;
+
+    let match;
+    while ((match = modernRegex.exec(errorOutput)) !== null) {
+      const [, level, message, file, line, column] = match;
+      const entry = {
+        file: path.relative(process.cwd(), file.trim()),
+        line: parseInt(line, 10),
+        column: parseInt(column, 10),
+        message: message.trim(),
+        severity: level === 'Warning' || level === 'Info' ? 'warning' : 'error',
+        category: 'solidity',
+        source: 'hardhat-compiler'
+      };
+      (level === 'Warning' || level === 'Info' ? warnings : errors).push(entry);
+    }
+
+    // Enhanced regex for legacy format: "file:line:col: ErrorType: message"
+    const legacyRegex = /(.+?):(\d+):(\d+):\s*(TypeError|ParserError|SyntaxError|DeclarationError|CompileError|InternalCompilerError|Warning|Info):\s*(.+)/g;
+    while ((match = legacyRegex.exec(errorOutput)) !== null) {
+      const [, file, line, column, level, message] = match;
+      const entry = {
+        file: path.relative(process.cwd(), file.trim()),
+        line: parseInt(line, 10),
+        column: parseInt(column, 10),
+        message: message.trim(),
+        severity: level === 'Warning' || level === 'Info' ? 'warning' : 'error',
+        category: 'solidity',
+        source: 'hardhat-compiler'
+      };
+      (level === 'Warning' || level === 'Info' ? warnings : errors).push(entry);
+    }
+
+    // Handle Hardhat-specific errors (HH600, etc.)
+    const hardhatErrorRegex = /Error HH\d+:\s*(.+)/g;
+    while ((match = hardhatErrorRegex.exec(errorOutput)) !== null) {
+      const [, message] = match;
+      errors.push({
+        file: 'hardhat',
+        line: 1,
+        column: 1,
+        message: message.trim(),
+        severity: 'error',
+        category: 'solidity',
+        source: 'hardhat'
+      });
+    }
+
+    // Fallback for any remaining compilation errors
+    if (!errors.length && !warnings.length && (errorOutput.includes('Error') || errorOutput.includes('failed') || errorOutput.includes('compilation'))) {
+      errors.push({
+        file: 'solidity',
+        line: 1,
+        column: 1,
+        message: errorOutput.trim(),
+        severity: 'error',
+        category: 'solidity',
+        source: 'hardhat'
+      });
+    }
+
+    console.log(`🔍 Final result:`, { errors: errors.length, warnings: warnings.length });
+    return { errors, warnings };
   }
 
   /**
@@ -458,3 +703,4 @@ export class RailwayCompilationValidator {
     };
   }
 }
+

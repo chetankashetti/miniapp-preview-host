@@ -238,15 +238,28 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    let stdout = "";
+    let stderr = "";
     let output = "";
-    const onData = (d) => {
+    
+    const onStdoutData = (d) => {
       const line = `${label} ${d.toString()}`;
+      stdout += d.toString();
       output += d.toString();
       process.stdout.write(line);
       logs?.push(line);
     };
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
+    
+    const onStderrData = (d) => {
+      const line = `${label} ${d.toString()}`;
+      stderr += d.toString();
+      output += d.toString();
+      process.stdout.write(line);
+      logs?.push(line);
+    };
+    
+    child.stdout.on("data", onStdoutData);
+    child.stderr.on("data", onStderrData);
 
     // Handle spawn errors (like ENOENT)
     child.on("error", (error) => {
@@ -257,12 +270,19 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
     });
 
     child.on("exit", (code) => {
-      if (code === 0) resolve(output);
-      else {
+      if (code === 0) {
+        // Return both stdout and stderr for successful commands
+        resolve({ stdout, stderr, output });
+      } else {
         const msg = `${cmd} exited ${code}`;
         console.error(`${label} ${msg}`);
         logs?.push(`${label} ${msg}\n`);
-        reject(new Error(msg));
+        // Include the actual output in the error for validation parsing
+        const error = new Error(msg);
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.output = output;
+        reject(error);
       }
     });
   });

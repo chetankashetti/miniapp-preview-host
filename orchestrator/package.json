@@ -2,12 +2,17 @@
   "name": "preview-host",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "./run-integration-tests.js",
+    "test:integration": "./run-integration-tests.js"
+  },
   "dependencies": {
     "body-parser": "^1.20.2",
     "dotenv": "^17.2.2",
     "express": "^4.19.2",
     "http-proxy": "^1.18.1",
     "typescript": "^5.0.0",
+    "@types/node": "^20.0.0",
     "next": "^15.0.0",
     "eslint": "^9.0.0",
     "hardhat": "^3.0.0"
