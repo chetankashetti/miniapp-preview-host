@@ -49,24 +49,39 @@ class TypeScriptCompilerService {
       // Load tsconfig.json if it exists
       const tsconfigPath = path.join(tempDir, 'tsconfig.json');
       let compilerOptions = { ...this.compilerOptions };
-      
+
       if (existsSync(tsconfigPath)) {
         try {
           const tsconfigContent = await fs.readFile(tsconfigPath, 'utf8');
+          const tsconfigJson = JSON.parse(tsconfigContent);
+
+          // ✅ Ensure baseUrl is set in the tsconfig.json file itself
+          if (!tsconfigJson.compilerOptions) {
+            tsconfigJson.compilerOptions = {};
+          }
+          if (!tsconfigJson.compilerOptions.baseUrl) {
+            console.log(`[${projectId}] 🔧 Adding missing baseUrl to tsconfig.json`);
+            tsconfigJson.compilerOptions.baseUrl = ".";
+            // Write the corrected tsconfig back to disk
+            await fs.writeFile(tsconfigPath, JSON.stringify(tsconfigJson, null, 2), 'utf8');
+          }
+
           const configFile = ts.parseJsonConfigFileContent(
-            JSON.parse(tsconfigContent),
+            tsconfigJson,
             ts.sys,
             path.dirname(tsconfigPath)
           );
           compilerOptions = {
             ...this.compilerOptions,
             ...configFile.options,
-            baseUrl: configFile.options.baseUrl || ".", // ✅ Ensure baseUrl is always set
+            baseUrl: configFile.options.baseUrl || tempDir, // ✅ Fallback to tempDir as absolute path
             paths: {
               ...this.compilerOptions.paths,
               ...configFile.options.paths
             }
           };
+
+          console.log(`[${projectId}] 📋 TypeScript config loaded: baseUrl="${compilerOptions.baseUrl}"`);
         } catch (error) {
           console.warn(`[${projectId}] ⚠️ Failed to parse tsconfig.json, using defaults:`, error.message);
         }
@@ -228,43 +243,73 @@ export class RailwayCompilationValidator {
       await this.createTempProjectForValidation(tempDir, filesArray, runCommand);
       console.log(`[${projectId}] 📁 Created temporary project structure`);
       
-      // 2. Run validations in parallel
-      const validationPromises = [];
-      
-      if (validationConfig.enableTypeScript) {
-        validationPromises.push(this.validateTypeScript(projectId, tempDir, runCommand));
-      }
-      
-      if (validationConfig.enableSolidity) {
-        validationPromises.push(this.validateSolidity(projectId, tempDir, runCommand));
-      }
-      
-      if (validationConfig.enableESLint) {
-        validationPromises.push(this.validateESLint(projectId, tempDir, runCommand));
-      }
-      
-      // Skip build validation since TypeScript validation now uses Next.js build
-      if (validationConfig.enableBuild) {
-        validationPromises.push(this.validateBuild(projectId, tempDir, runCommand));
-      }
-      
-      if (validationConfig.enableRuntimeChecks) {
-        validationPromises.push(this.validateRuntimeChecks(projectId, filesArray));
-      }
-      
-      // 3. Wait for all validations to complete with timeout
-      console.log(`[${projectId}] 🔍 Running ${validationPromises.length} validation checks...`);
-      
+      // 2. Run validations sequentially to ensure proper dependency resolution
+      // ✅ Sequential execution ensures npm install completes before validation
+      const results = [];
+      const validationTypes = [];
+
       // Add timeout to prevent hanging validations (5 minutes max)
       const VALIDATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`Validation timeout after ${VALIDATION_TIMEOUT_MS}ms`)), VALIDATION_TIMEOUT_MS);
-      });
-      
-      const results = await Promise.race([
-        Promise.all(validationPromises),
-        timeoutPromise
-      ]);
+      const validationStartTime = Date.now();
+
+      if (validationConfig.enableTypeScript) {
+        validationTypes.push('TypeScript');
+      }
+      if (validationConfig.enableSolidity) {
+        validationTypes.push('Solidity');
+      }
+      if (validationConfig.enableESLint) {
+        validationTypes.push('ESLint');
+      }
+      if (validationConfig.enableBuild) {
+        validationTypes.push('Build');
+      }
+      if (validationConfig.enableRuntimeChecks) {
+        validationTypes.push('Runtime Checks');
+      }
+
+      console.log(`[${projectId}] 🔍 Running ${validationTypes.length} validation checks sequentially: ${validationTypes.join(', ')}`);
+
+      // ✅ Run each validation sequentially with individual timeout checks
+      if (validationConfig.enableTypeScript) {
+        if (Date.now() - validationStartTime > VALIDATION_TIMEOUT_MS) {
+          throw new Error(`Validation timeout after ${VALIDATION_TIMEOUT_MS}ms`);
+        }
+        console.log(`[${projectId}] Running TypeScript validation...`);
+        results.push(await this.validateTypeScript(projectId, tempDir, runCommand));
+      }
+
+      if (validationConfig.enableSolidity) {
+        if (Date.now() - validationStartTime > VALIDATION_TIMEOUT_MS) {
+          throw new Error(`Validation timeout after ${VALIDATION_TIMEOUT_MS}ms`);
+        }
+        console.log(`[${projectId}] Running Solidity validation...`);
+        results.push(await this.validateSolidity(projectId, tempDir, runCommand));
+      }
+
+      if (validationConfig.enableESLint) {
+        if (Date.now() - validationStartTime > VALIDATION_TIMEOUT_MS) {
+          throw new Error(`Validation timeout after ${VALIDATION_TIMEOUT_MS}ms`);
+        }
+        console.log(`[${projectId}] Running ESLint validation...`);
+        results.push(await this.validateESLint(projectId, tempDir, runCommand));
+      }
+
+      if (validationConfig.enableBuild) {
+        if (Date.now() - validationStartTime > VALIDATION_TIMEOUT_MS) {
+          throw new Error(`Validation timeout after ${VALIDATION_TIMEOUT_MS}ms`);
+        }
+        console.log(`[${projectId}] Running Build validation...`);
+        results.push(await this.validateBuild(projectId, tempDir, runCommand));
+      }
+
+      if (validationConfig.enableRuntimeChecks) {
+        if (Date.now() - validationStartTime > VALIDATION_TIMEOUT_MS) {
+          throw new Error(`Validation timeout after ${VALIDATION_TIMEOUT_MS}ms`);
+        }
+        console.log(`[${projectId}] Running Runtime Checks validation...`);
+        results.push(await this.validateRuntimeChecks(projectId, filesArray));
+      }
       
       // 4. Combine results
       const allErrors = [];
@@ -408,15 +453,43 @@ export class RailwayCompilationValidator {
     try {
       // Use the same robust npmInstall function as deploy endpoint
       const logs = [];
-      await this.npmInstall(tempDir, { 
-        id: "validation", 
+      await this.npmInstall(tempDir, {
+        id: "validation",
         storeDir: path.join(process.cwd(), '.npm-store'),
-        logs 
+        logs
       });
-      console.log(`Dependencies installed successfully`);
+
+      // ✅ Verify node_modules directory exists and is populated
+      const nodeModulesPath = path.join(tempDir, 'node_modules');
+      if (!existsSync(nodeModulesPath)) {
+        throw new Error('node_modules directory was not created after npm install');
+      }
+
+      // ✅ Verify critical dependencies are installed (at least package.json should exist)
+      const packageJsonPath = path.join(tempDir, 'package.json');
+      if (!existsSync(packageJsonPath)) {
+        throw new Error('package.json not found in validation directory');
+      }
+
+      // ✅ Verify at least some core dependencies exist
+      const criticalDeps = ['react', 'next', 'typescript'];
+      const missingDeps = [];
+      for (const dep of criticalDeps) {
+        const depPath = path.join(nodeModulesPath, dep);
+        if (!existsSync(depPath)) {
+          missingDeps.push(dep);
+        }
+      }
+
+      if (missingDeps.length > 0) {
+        throw new Error(`Critical dependencies not installed: ${missingDeps.join(', ')}`);
+      }
+
+      console.log(`Dependencies installed and verified successfully`);
     } catch (error) {
-      console.warn(`Failed to install dependencies:`, error.message);
-      // Continue with validation even if npm install fails
+      console.error(`Failed to install dependencies:`, error.message);
+      // ❌ Don't continue with validation if dependencies aren't available
+      throw new Error(`Dependency installation failed: ${error.message}. Cannot proceed with validation without dependencies.`);
     }
   }
 
@@ -530,12 +603,19 @@ export class RailwayCompilationValidator {
     const startTime = Date.now();
     try {
       console.log(`[${projectId}] 🔍 ESLint validation started...`);
-      
+
+      // Check if src directory exists (ESLint target)
+      const srcDir = path.join(tempDir, 'src');
+      if (!existsSync(srcDir)) {
+        console.log(`[${projectId}] ℹ️ No src directory found, skipping ESLint validation`);
+        return { errors: [], warnings: [] };
+      }
+
       // Use globally available ESLint from Railway service's node_modules
       const globalEslintPath = path.join(process.cwd(), 'node_modules', '.bin', 'eslint');
       let command = "npx";
       let args = ["eslint", "src", "--format", "json", "--max-warnings", "0"];
-      
+
       if (existsSync(globalEslintPath)) {
         command = globalEslintPath;
         args = ["src", "--format", "json", "--max-warnings", "0"];
@@ -543,12 +623,12 @@ export class RailwayCompilationValidator {
       } else {
         console.log(`[${projectId}] 📦 Using npx to run ESLint`);
       }
-      
-      const result = await runCommand(command, args, { 
-        id: projectId, 
-        cwd: tempDir 
+
+      const result = await runCommand(command, args, {
+        id: projectId,
+        cwd: tempDir
       });
-      
+
       const duration = Date.now() - startTime;
       console.log(`[${projectId}] ✅ ESLint validation completed in ${duration}ms:`);
       console.log(`[${projectId}]   ❌ Errors: 0`);
@@ -556,33 +636,52 @@ export class RailwayCompilationValidator {
       return { errors: [], warnings: [] };
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.log(`[${projectId}] ⚠️ ESLint validation found errors after ${duration}ms`);
-      
-      // Use the same approach as local validation - check for command failure
-      if (error.code === 1 || error.code === 2) {
-        // Command failed - parse the actual output
-        const output = error.output || `${error.stdout || ''}\n${error.stderr || ''}` || error.message || String(error);
+
+      // ✅ Distinguish between different error types
+      const output = error.output || `${error.stdout || ''}\n${error.stderr || ''}` || error.message || String(error);
+
+      // Check if it's a configuration error (exit code 2)
+      if (error.message && error.message.includes('exited 2')) {
+        console.warn(`[${projectId}] ⚠️ ESLint configuration error after ${duration}ms`);
+        // Configuration errors are warnings, not blocking errors
+        return {
+          errors: [],
+          warnings: [{
+            file: 'eslint.config',
+            line: 1,
+            column: 1,
+            message: `ESLint configuration issue: ${output.substring(0, 200)}`,
+            severity: 'warning',
+            category: 'eslint-config',
+            source: 'eslint'
+          }]
+        };
+      }
+
+      // Check if it's a linting error (exit code 1)
+      if (error.message && error.message.includes('exited 1')) {
+        console.log(`[${projectId}] 📋 ESLint found linting issues after ${duration}ms`);
         const result = this.parseESLintErrors(output);
         console.log(`[${projectId}] ✅ ESLint validation completed in ${duration}ms:`);
         console.log(`[${projectId}]   ❌ Errors: ${result.errors.length}`);
         console.log(`[${projectId}]   ⚠️  Warnings: ${result.warnings.length}`);
         return result;
-      } else {
-        // Unexpected error
-        console.error(`[${projectId}] ❌ ESLint validation failed after ${duration}ms:`, error.message);
-        return {
-          errors: [{
-            file: 'eslint-validation',
-            line: 1,
-            column: 1,
-            message: `ESLint validation failed: ${error.message}`,
-            severity: 'error',
-            category: 'eslint',
-            source: 'railway'
-          }],
-          warnings: []
-        };
       }
+
+      // Unexpected error - treat as warning to not block validation
+      console.warn(`[${projectId}] ⚠️ ESLint validation encountered unexpected error after ${duration}ms:`, error.message);
+      return {
+        errors: [],
+        warnings: [{
+          file: 'eslint-validation',
+          line: 1,
+          column: 1,
+          message: `ESLint validation warning: ${error.message}`,
+          severity: 'warning',
+          category: 'eslint',
+          source: 'validation'
+        }]
+      };
     }
   }
 

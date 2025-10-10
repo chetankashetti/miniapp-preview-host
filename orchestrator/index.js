@@ -291,8 +291,8 @@ function run(cmd, args, { id, cwd, env, logs } = {}) {
 
 async function npmInstall(dir, { id, storeDir, logs }) {
   const startTime = Date.now();
-  console.log(`[${id}] Starting npm install...`);
-  
+  console.log(`[${id}] Starting npm install... (Environment: ${IS_RAILWAY ? 'Railway' : 'Local'})`);
+
   await fs.mkdir(storeDir, { recursive: true });
 
   const env = {
@@ -306,16 +306,38 @@ async function npmInstall(dir, { id, storeDir, logs }) {
     "--prefer-offline",
   ];
 
+  // ✅ Add Railway-specific timeout handling
+  const INSTALL_TIMEOUT = IS_RAILWAY ? 300000 : 120000; // 5 min for Railway, 2 min for local
+  console.log(`[${id}] npm install timeout set to ${INSTALL_TIMEOUT}ms`);
+
   try {
     console.log(`[${id}] Running npm install with --prefer-offline...`);
-    await run("npm", baseArgs, { id, cwd: dir, env, logs });
-    console.log(`[${id}] npm install completed in ${Date.now() - startTime}ms`);
+
+    // ✅ Create a timeout promise
+    const installPromise = run("npm", baseArgs, { id, cwd: dir, env, logs });
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`npm install timeout after ${INSTALL_TIMEOUT}ms`)), INSTALL_TIMEOUT);
+    });
+
+    await Promise.race([installPromise, timeoutPromise]);
+    console.log(`[${id}] ✅ npm install completed in ${Date.now() - startTime}ms`);
   } catch (error) {
+    if (error.message.includes('timeout')) {
+      console.error(`[${id}] ❌ npm install timed out after ${INSTALL_TIMEOUT}ms`);
+      throw error;
+    }
+
     console.log(`[${id}] npm install with --prefer-offline failed, retrying without...`);
     // fallback without --prefer-offline
     const retry = baseArgs.filter((a) => a !== "--prefer-offline");
-    await run("npm", retry, { id, cwd: dir, env, logs });
-    console.log(`[${id}] npm install retry completed in ${Date.now() - startTime}ms`);
+
+    const retryPromise = run("npm", retry, { id, cwd: dir, env, logs });
+    const retryTimeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`npm install retry timeout after ${INSTALL_TIMEOUT}ms`)), INSTALL_TIMEOUT);
+    });
+
+    await Promise.race([retryPromise, retryTimeoutPromise]);
+    console.log(`[${id}] ✅ npm install retry completed in ${Date.now() - startTime}ms`);
   }
 
   // Verify Next binary exists
@@ -323,6 +345,8 @@ async function npmInstall(dir, { id, storeDir, logs }) {
   if (!(await exists(nextBin))) {
     throw new Error(`[${id}] install finished but ".bin/next" is missing`);
   }
+
+  console.log(`[${id}] 📦 Verified Next.js binary exists`);
 }
 
 async function needInstall(dir) {
