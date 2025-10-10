@@ -304,6 +304,7 @@ async function npmInstall(dir, { id, storeDir, logs }) {
   const baseArgs = [
     "install",
     "--prefer-offline",
+    "--legacy-peer-deps", // ✅ Allow installing with peer dependency conflicts
   ];
 
   // ✅ Add Railway-specific timeout handling
@@ -328,7 +329,7 @@ async function npmInstall(dir, { id, storeDir, logs }) {
     }
 
     console.log(`[${id}] npm install with --prefer-offline failed, retrying without...`);
-    // fallback without --prefer-offline
+    // fallback without --prefer-offline but keep --legacy-peer-deps
     const retry = baseArgs.filter((a) => a !== "--prefer-offline");
 
     const retryPromise = run("npm", retry, { id, cwd: dir, env, logs });
