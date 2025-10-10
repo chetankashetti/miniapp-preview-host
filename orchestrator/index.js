@@ -92,16 +92,19 @@ async function deployToVercel(dir, projectId, logs) {
     console.log(`[${projectId}] Using npx to run Vercel CLI...`);
     
     // Deploy to Vercel using npx (more reliable in containerized environments)
-    const output = await run("npx", ["vercel", "--token", DEPLOYMENT_TOKEN_SECRET, "--name", projectId, "--prod", "--confirm", "--public"], { 
-      id: projectId, 
-      cwd: dir, 
-      env: { ...env, DEPLOYMENT_TOKEN_SECRET, CI: "1" }, 
-      logs 
+    const result = await run("npx", ["vercel", "--token", DEPLOYMENT_TOKEN_SECRET, "--name", projectId, "--prod", "--confirm", "--public"], {
+      id: projectId,
+      cwd: dir,
+      env: { ...env, DEPLOYMENT_TOKEN_SECRET, CI: "1" },
+      logs
     });
-    
+
     console.log(`[${projectId}] ✅ Vercel deployment completed`);
-    
+
     // Extract the actual deployment URL from Vercel CLI output
+    // run() returns {stdout, stderr, output}, so we need to access the string property
+    const output = result.output || result.stdout || '';
+
     // Look for URLs in the output (e.g., "https://project-name-xyz123.vercel.app")
     const urlMatch = output.match(/https:\/\/[^\s]+\.vercel\.app/);
     if (urlMatch) {
